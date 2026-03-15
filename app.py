@@ -15,11 +15,15 @@ st.set_page_config(page_title="WorkPulse Platform", layout="wide")
 
 # --- SECURE CLOUD CONNECTION ---
 try:
-    SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    DB_URL = st.secrets["DB_URL"]
-except Exception:
-    st.error("⚠️ Secrets not found! Please add your Supabase and DB keys to Streamlit Advanced Settings.")
+    # This looks in Render Environment Variables OR Streamlit Secrets
+    SUPABASE_URL = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
+    DB_URL = os.environ.get("DB_URL") or st.secrets.get("DB_URL")
+    
+    if not SUPABASE_URL or not SUPABASE_KEY or not DB_URL:
+        raise ValueError("Connection keys are missing in the environment.")
+except Exception as e:
+    st.error(f"⚠️ Connection Keys not found! Error: {e}")
     st.stop()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -394,7 +398,7 @@ def render_inbox(my_role, my_branch, my_id):
                     conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE notif_id=%s", (row['Notif_ID'],))
                     conn.commit()
                     conn.close()
-                    st.cache_data.clear() # Clear cache to update immediately
+                    st.cache_data.clear()
                     st.rerun()
                     
                 if pd.notna(row['Sender_ID']) and row['Sender_ID'] != 0:
