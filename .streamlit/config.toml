@@ -1,0 +1,14 @@
+[theme]
+# Accent Color - A vibrant, premium medical blue for buttons and charts
+primaryColor = "#0083B0"
+
+# Main Background - The soft, clean light-grey from your login screen
+backgroundColor = "#F4F7F8"
+
+# Sidebar Background - Pure crisp white so it feels light and airy, not heavy!
+secondaryBackgroundColor = "#FFFFFF"
+
+# Text Color - Dark slate grey for perfect readability
+textColor = "#2D3748"
+
+font = "sans serif"
