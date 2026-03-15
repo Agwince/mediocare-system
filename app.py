@@ -27,7 +27,10 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 def get_connection():
     return psycopg2.connect(DB_URL)
 
+# 🔴 SPEED UPGRADE: Cache the database queries so they load instantly!
+@st.cache_data(ttl=15, show_spinner=False)
 def get_df(query, params=None):
+    """Helper function to cleanly fetch DataFrames from Postgres with 15-second memory"""
     conn = get_connection()
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
@@ -391,6 +394,7 @@ def render_inbox(my_role, my_branch, my_id):
                     conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE notif_id=%s", (row['Notif_ID'],))
                     conn.commit()
                     conn.close()
+                    st.cache_data.clear() # Clear cache to update immediately
                     st.rerun()
                     
                 if pd.notna(row['Sender_ID']) and row['Sender_ID'] != 0:
@@ -402,6 +406,7 @@ def render_inbox(my_role, my_branch, my_id):
                             conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE notif_id=%s", (row['Notif_ID'],))
                             conn.commit()
                             conn.close()
+                            st.cache_data.clear()
                             st.success("Reply sent!")
                             st.rerun()
     else:
@@ -449,130 +454,21 @@ if not st.session_state['logged_in']:
     <style>
     .stApp { background-color: #F4F7F8 !important; }
     header { visibility: hidden; }
-    
-    [data-testid="stForm"] {
-        background-color: #FFFFFF !important;
-        border: none !important;
-        border-radius: 30px !important;
-        box-shadow: 0px 15px 50px rgba(0, 0, 0, 0.08) !important;
-        padding: 40px 40px !important;
-        margin-top: 50px !important;
-    }
-    
-    .welcome-text {
-        text-align: center;
-        font-size: 32px;
-        font-weight: 900;
-        color: #1A202C !important;
-        margin-bottom: 30px;
-        line-height: 1.2;
-        font-family: 'Arial Black', sans-serif;
-    }
-    .welcome-subtext {
-        font-size: 16px;
-        color: #1484A6;
-        font-weight: 700;
-        font-family: sans-serif;
-    }
-
-    .stTextInput label {
-        color: #4A5568 !important;
-        font-weight: 700 !important;
-        font-size: 15px !important;
-        margin-bottom: 7px;
-    }
-    
-    .stTextInput div[data-baseweb="input"] {
-        background-color: #EDF2F7 !important; 
-        border: 2px solid transparent !important;
-        border-radius: 12px !important;
-        transition: all 0.3s;
-    }
-    .stTextInput div[data-baseweb="input"]:focus-within {
-        border: 2px solid #1484A6 !important;
-    }
-    
-    .stTextInput input {
-        color: #1A202C !important;
-        -webkit-text-fill-color: #1A202C !important;
-        caret-color: #1A202C !important;
-        padding: 14px !important;
-        font-size: 16px !important;
-    }
-    .stTextInput input::placeholder {
-        color: #A0AEC0 !important;
-        -webkit-text-fill-color: #A0AEC0 !important;
-    }
-    
-    [data-testid="stIconMaterial"] {
-        color: #4A5568 !important;
-    }
-    
-    [data-testid="stFormSubmitButton"] button {
-        background-color: #111111 !important;
-        color: #FFFFFF !important;
-        border-radius: 12px !important;
-        font-weight: 900 !important;
-        font-size: 16px !important;
-        padding: 10px 30px !important;
-        border: none !important;
-        transition: all 0.3s ease;
-        margin-top: 15px;
-    }
-    [data-testid="stFormSubmitButton"] button:hover {
-        background-color: #333333 !important;
-        transform: translateY(-2px);
-    }
-    
-    .robot-container {
-        display: flex;
-        justify-content: center;
-        align-items: end;
-        height: 80px;
-        margin-bottom: -70px;
-        position: relative;
-        z-index: 10;
-    }
-    .robot-face {
-        width: 90px;
-        height: 70px;
-        background-color: #D1D5DB; 
-        border-radius: 20px 20px 5px 5px; 
-        position: relative;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        gap: 15px;
-        box-shadow: 0px -5px 15px rgba(0,0,0,0.05);
-    }
-    .eye {
-        width: 26px;
-        height: 26px;
-        background-color: #FFFFFF;
-        border-radius: 50%;
-        position: relative;
-        overflow: hidden;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        border: 2px solid #A0AEC0;
-    }
-    .pupil {
-        width: 12px;
-        height: 12px;
-        background-color: #1A202C;
-        border-radius: 50%;
-        position: absolute;
-        transition: transform 0.1s ease-out; 
-    }
-    .eyelid {
-        position: absolute;
-        top: 0; left: 0;
-        width: 100%; height: 0%;
-        background-color: #A0AEC0; 
-        transition: height 0.2s ease-in-out; 
-        z-index: 2;
-    }
+    [data-testid="stForm"] { background-color: #FFFFFF !important; border: none !important; border-radius: 30px !important; box-shadow: 0px 15px 50px rgba(0, 0, 0, 0.08) !important; padding: 40px 40px !important; margin-top: 50px !important; }
+    .welcome-text { text-align: center; font-size: 32px; font-weight: 900; color: #1A202C !important; margin-bottom: 30px; line-height: 1.2; font-family: 'Arial Black', sans-serif; }
+    .welcome-subtext { font-size: 16px; color: #1484A6; font-weight: 700; font-family: sans-serif; }
+    .stTextInput label { color: #4A5568 !important; font-weight: 700 !important; font-size: 15px !important; margin-bottom: 7px; }
+    .stTextInput div[data-baseweb="input"] { background-color: #EDF2F7 !important; border: 2px solid transparent !important; border-radius: 12px !important; transition: all 0.3s; }
+    .stTextInput div[data-baseweb="input"]:focus-within { border: 2px solid #1484A6 !important; }
+    .stTextInput input { color: #1A202C !important; -webkit-text-fill-color: #1A202C !important; caret-color: #1A202C !important; padding: 14px !important; font-size: 16px !important; }
+    .stTextInput input::placeholder { color: #A0AEC0 !important; -webkit-text-fill-color: #A0AEC0 !important; }
+    [data-testid="stFormSubmitButton"] button { background-color: #111111 !important; color: #FFFFFF !important; border-radius: 12px !important; font-weight: 900 !important; font-size: 16px !important; padding: 10px 30px !important; border: none !important; transition: all 0.3s ease; margin-top: 15px; }
+    [data-testid="stFormSubmitButton"] button:hover { background-color: #333333 !important; transform: translateY(-2px); }
+    .robot-container { display: flex; justify-content: center; align-items: end; height: 80px; margin-bottom: -70px; position: relative; z-index: 10; }
+    .robot-face { width: 90px; height: 70px; background-color: #D1D5DB; border-radius: 20px 20px 5px 5px; position: relative; display: flex; justify-content: center; align-items: center; gap: 15px; box-shadow: 0px -5px 15px rgba(0,0,0,0.05); }
+    .eye { width: 26px; height: 26px; background-color: #FFFFFF; border-radius: 50%; position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center; border: 2px solid #A0AEC0; }
+    .pupil { width: 12px; height: 12px; background-color: #1A202C; border-radius: 50%; position: absolute; transition: transform 0.1s ease-out; }
+    .eyelid { position: absolute; top: 0; left: 0; width: 100%; height: 0%; background-color: #A0AEC0; transition: height 0.2s ease-in-out; z-index: 2; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -599,10 +495,7 @@ if not st.session_state['logged_in']:
             const pupils = parentDoc.querySelectorAll('.pupil');
             const eyelids = parentDoc.querySelectorAll('.eyelid');
             const inputs = parentDoc.querySelectorAll('input');
-            if (inputs.length < 2 || pupils.length === 0) {
-                setTimeout(attachInteractions, 300);
-                return;
-            }
+            if (inputs.length < 2 || pupils.length === 0) { setTimeout(attachInteractions, 300); return; }
             const passwordInput = inputs[1];
             parentDoc.addEventListener('mousemove', (e) => {
                 if (parentDoc.activeElement === passwordInput) return; 
@@ -617,9 +510,7 @@ if not st.session_state['logged_in']:
                 eyelids.forEach(el => el.style.height = '100%');
                 pupils.forEach(pupil => pupil.style.transform = `translate(0px, 0px)`);
             });
-            passwordInput.addEventListener('blur', () => {
-                eyelids.forEach(el => el.style.height = '0%');
-            });
+            passwordInput.addEventListener('blur', () => { eyelids.forEach(el => el.style.height = '0%'); });
         }
         attachInteractions();
     });
@@ -725,6 +616,7 @@ else:
 
     if st.sidebar.button("Logout", type="secondary"):
         st.session_state['logged_in'] = False
+        st.cache_data.clear()
         st.rerun()
 
     # =========================================================
@@ -762,6 +654,7 @@ else:
                 if st.form_submit_button("Register Branch"):
                     if new_b_name:
                         add_branch(new_b_name, new_b_lat, new_b_lon)
+                        st.cache_data.clear()
                         st.success(f"Branch '{new_b_name}' successfully added to the database.")
                     else:
                         st.error("Branch Name is required.")
@@ -790,6 +683,7 @@ else:
                         selected_branch_id = branch_options[new_u_branch]
                         success, message = add_user(new_u_name, new_u_phone, new_u_pass, new_u_role, selected_branch_id)
                         if success:
+                            st.cache_data.clear()
                             st.success(message)
                         else:
                             st.error(message)
@@ -817,6 +711,7 @@ else:
                             new_assign_branch = st.selectbox("Select New Branch", list(branch_options.keys()))
                             if st.form_submit_button("Update Branch", type="primary"):
                                 update_user_branch(edit_user_id, branch_options[new_assign_branch])
+                                st.cache_data.clear()
                                 st.success(f"Branch reassigned to {new_assign_branch} successfully!")
                                 st.rerun()
                                 
@@ -826,6 +721,7 @@ else:
                             st.caption("Warning: This action permanently deletes their login.")
                             if st.form_submit_button("Delete User", type="primary"):
                                 delete_user(edit_user_id)
+                                st.cache_data.clear()
                                 st.success("User deleted successfully!")
                                 st.rerun()
 
@@ -850,6 +746,7 @@ else:
                         conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE notif_id=%s", (row['Notif_ID'],))
                         conn.commit()
                         conn.close()
+                        st.cache_data.clear()
                         st.rerun()
             else:
                 st.success("No pending access requests.")
@@ -890,6 +787,7 @@ else:
                             if worker_lat and worker_lon:
                                 log_attendance(st.session_state['user_id'], worker_lat, worker_lon, checkin_status='Pending GM')
                                 log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} ({st.session_state['role']}) is requesting check-in approval.")
+                                st.cache_data.clear()
                                 st.success("Location recorded. Waiting for GM approval.")
                                 st.rerun()
                             else:
@@ -900,6 +798,7 @@ else:
                             if success:
                                 log_attendance(st.session_state['user_id'], worker_lat or 0.0, worker_lon or 0.0, checkin_status='Pending Manager')
                                 log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🟢 {st.session_state['name']} (Worker) is requesting check-in approval.")
+                                st.cache_data.clear()
                                 st.success("Check-in requested. Waiting for Branch Manager approval.")
                                 st.rerun()
                             else:
@@ -907,6 +806,7 @@ else:
                         
                         else:
                             log_attendance(st.session_state['user_id'], worker_lat or 0.0, worker_lon or 0.0, checkin_status='Approved')
+                            st.cache_data.clear()
                             st.success("Shift started!")
                             st.rerun()
                             
@@ -914,6 +814,7 @@ else:
                 st.info("You operate across all branches. Click below to start your shift.")
                 if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
                     log_attendance(st.session_state['user_id'], 0.0, 0.0, checkin_status='Approved')
+                    st.cache_data.clear()
                     st.rerun()
             
             if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
@@ -961,6 +862,7 @@ else:
                 
                 if st.button("▶️ END BREAK & RESUME WORK", use_container_width=True, type="primary"):
                     end_break(st.session_state['user_id'], break_start_time_str)
+                    st.cache_data.clear()
                     st.rerun()
                 
                 if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
@@ -981,6 +883,7 @@ else:
                 with col2:
                     if st.button("🍱 Take 1h Lunch Break", use_container_width=True):
                         start_break(st.session_state['user_id'])
+                        st.cache_data.clear()
                         st.rerun()
 
         if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
@@ -1001,6 +904,7 @@ else:
                     submitted = st.form_submit_button("Submit Request to HR")
                     if submitted:
                         submit_leave_request(st.session_state['user_id'], start_date, end_date, reason)
+                        st.cache_data.clear()
                         st.success("Request sent to HR for approval.")
                         
             elif st.session_state['role'] == "Marketer" and is_working:
@@ -1014,6 +918,7 @@ else:
                             b_id = st.session_state['branch_id'] if st.session_state['branch_id'] else 1
                             log_expense(b_id, exp_amount, exp_desc)
                             log_notification(None, 'General Manager', None, None, f"💸 Marketer {st.session_state['name']} logged a field expense: KES {exp_amount} for {exp_desc}.")
+                            st.cache_data.clear()
                             st.success("Expense logged securely to finance!")
                         else:
                             st.error("Please enter a description.")
@@ -1026,6 +931,7 @@ else:
                         start_journey(st.session_state['user_id'])
                         log_notification(None, 'General Manager', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
                         log_notification(None, 'HR', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
+                        st.cache_data.clear()
                         st.rerun()
                 else:
                     st.success(f"🟢 Journey Active (ID: {active_journey})")
@@ -1048,6 +954,7 @@ else:
                         end_journey(active_journey)
                         log_notification(None, 'General Manager', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
                         log_notification(None, 'HR', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
+                        st.cache_data.clear()
                         st.rerun()
 
             elif st.session_state['role'] == "Branch Manager":
@@ -1076,6 +983,7 @@ else:
                                 col_p1.warning(f"**{row['Name']}** requested check-in at {row['Check_In_Time']}")
                                 if col_p2.button("Approve In", key=f"bm_app_in_{row['Record_ID']}", type="primary"):
                                     approve_checkin(row['Record_ID'])
+                                    st.cache_data.clear()
                                     st.rerun()
                         else:
                             st.caption("No pending check-ins.")
@@ -1094,6 +1002,7 @@ else:
                                     conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
                                     conn.commit()
                                     conn.close()
+                                    st.cache_data.clear()
                                     st.rerun()
                         else:
                             st.caption("No pending checkouts.")
@@ -1105,6 +1014,7 @@ else:
                             log_daily_sales(st.session_state['branch_id'], daily_sales)
                             log_notification(None, 'General Manager', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
                             log_notification(None, 'CEO', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
+                            st.cache_data.clear()
                             st.success(f"KES {daily_sales} reported successfully.")
                             
                         st.write("---")
@@ -1114,6 +1024,7 @@ else:
                         if st.button("Submit Expense", type="secondary"):
                             if exp_desc.strip() != "":
                                 log_expense(st.session_state['branch_id'], exp_amount, exp_desc)
+                                st.cache_data.clear()
                                 st.success("Expense logged securely.")
                             else:
                                 st.error("Please enter a description.")
@@ -1137,6 +1048,7 @@ else:
                         m_desc = st.text_area("Agenda / Description")
                         if st.form_submit_button("Schedule & Notify Workers", type="primary"):
                             log_meeting(st.session_state['branch_id'], st.session_state['name'], m_title, str(m_date), str(m_time), m_desc)
+                            st.cache_data.clear()
                             st.success("Meeting scheduled! Your workers will see this in their inbox.")
 
                 with tab3:
@@ -1184,9 +1096,11 @@ else:
                                 if col1.button(f"Approve & Send to CEO", key=f"approve_{row['Request_ID']}", type="primary"):
                                     update_leave_status(row['Request_ID'], 'Pending CEO')
                                     log_notification(None, 'CEO', None, None, f"📝 HR Approved leave for {row['Employee']}. Awaiting your final confirmation.")
+                                    st.cache_data.clear()
                                     st.rerun()
                                 if col2.button(f"Reject", key=f"reject_{row['Request_ID']}"):
                                     update_leave_status(row['Request_ID'], 'Rejected by HR')
+                                    st.cache_data.clear()
                                     st.rerun()
                     else:
                         st.info("No pending requests.")
@@ -1205,6 +1119,7 @@ else:
                             if col_f3.button("Approve In", key=f"hr_app_in_{row['Record_ID']}", type="primary"):
                                 approve_checkin(row['Record_ID'])
                                 log_notification(None, 'Worker', None, None, f"✅ HR approved your field check-in.")
+                                st.cache_data.clear()
                                 st.rerun()
                         st.write("---")
                         
@@ -1221,6 +1136,7 @@ else:
                                 conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
                                 conn.commit()
                                 conn.close()
+                                st.cache_data.clear()
                                 st.rerun()
                         st.write("---")
 
@@ -1319,6 +1235,7 @@ else:
                             if col_f3.button("Approve In", key=f"gm_app_in_{row['Record_ID']}", type="primary"):
                                 approve_checkin(row['Record_ID'])
                                 log_notification(None, 'Worker', None, None, f"✅ GM approved your field check-in.")
+                                st.cache_data.clear()
                                 st.rerun()
                     else:
                         st.caption("No pending field check-ins.")
@@ -1338,6 +1255,7 @@ else:
                                 conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
                                 conn.commit()
                                 conn.close()
+                                st.cache_data.clear()
                                 st.rerun()
                     else:
                         st.caption("No pending checkouts.")
@@ -1412,6 +1330,7 @@ else:
                             elif st.session_state['role'] == 'Worker':
                                 log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
                                 
+                            st.cache_data.clear()
                             st.success("Checkout requested!")
                             st.rerun()
                         else:
@@ -1537,6 +1456,7 @@ else:
                 b_message = st.text_area("Broadcast Message")
                 if st.form_submit_button("Send Broadcast", type="primary"):
                     log_notification(None, audience, None, None, f"📢 CEO ANNOUNCEMENT: {b_message}")
+                    st.cache_data.clear()
                     st.success(f"Message successfully sent to: {audience}")
 
         with tab5:
@@ -1549,9 +1469,11 @@ else:
                         col1, col2 = st.columns(2)
                         if col1.button(f"Confirm Approved", key=f"ceo_ok_{row['Request_ID']}", type="primary"):
                             update_leave_status(row['Request_ID'], 'Approved')
+                            st.cache_data.clear()
                             st.rerun()
                         if col2.button(f"Veto & Reject", key=f"ceo_no_{row['Request_ID']}"):
                             update_leave_status(row['Request_ID'], 'Rejected by CEO')
+                            st.cache_data.clear()
                             st.rerun()
             else:
                 st.success("No pending leaves to confirm.")
