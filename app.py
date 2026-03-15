@@ -14,18 +14,22 @@ import os
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
 
 # --- SECURE CLOUD CONNECTION ---
-try:
-    # This looks in Render Environment Variables OR Streamlit Secrets
-    SUPABASE_URL = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
-    DB_URL = os.environ.get("DB_URL") or st.secrets.get("DB_URL")
-    
-    if not SUPABASE_URL or not SUPABASE_KEY or not DB_URL:
-        raise ValueError("Connection keys are missing in the environment.")
-except Exception as e:
-    st.error(f"⚠️ Connection Keys not found! Error: {e}")
-    st.stop()
+# 1. First, try to pull keys from Render Environment Variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+DB_URL = os.environ.get("DB_URL")
 
+# 2. If it can't find them (like when testing locally), use Streamlit Secrets
+if not SUPABASE_URL or not DB_URL:
+    try:
+        SUPABASE_URL = st.secrets["SUPABASE_URL"]
+        SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+        DB_URL = st.secrets["DB_URL"]
+    except Exception:
+        st.error("⚠️ Connection Keys not found! Please check your Render Environment Variables.")
+        st.stop()
+
+# Connect to Supabase
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_connection():
