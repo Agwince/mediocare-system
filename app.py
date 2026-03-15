@@ -14,7 +14,6 @@ import os
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
 
 # --- SECURE CLOUD CONNECTION ---
-# These pull securely from Streamlit Secrets when hosted online
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -29,7 +28,6 @@ def get_connection():
     return psycopg2.connect(DB_URL)
 
 def get_df(query, params=None):
-    """Helper function to cleanly fetch DataFrames from Postgres"""
     conn = get_connection()
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
@@ -61,10 +59,8 @@ def log_notification(sender_id, target_role, target_branch_id, target_user_id, m
     conn = get_connection()
     cursor = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
     s_id = sender_id if sender_id != 0 else None
     t_b_id = target_branch_id if target_branch_id != 0 else None
-    
     cursor.execute("INSERT INTO notifications (sender_id, target_role, target_branch_id, target_user_id, message, created_at, is_read, file_path, file_name) VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s)", 
                    (s_id, target_role, t_b_id, target_user_id, message, now, file_path, file_name))
     conn.commit()
@@ -132,7 +128,6 @@ def approve_checkin(record_id):
     user_id = cursor.fetchone()[0]
     conn.commit()
     conn.close()
-    
     status = update_performance_status(user_id)
     if status != '🟢 Green':
         log_notification(None, 'CEO', None, None, f"⚠️ Attendance Violation: User {user_id} dropped to {status} status.")
@@ -155,14 +150,12 @@ def request_check_out(user_id, role):
     cursor = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date_today = datetime.now().strftime("%Y-%m-%d")
-    
     if role in ['Marketer', 'Driver']:
         status = 'Pending GM'
     elif role in ['Branch Manager', 'General Manager', 'CEO', 'HR', 'System Admin']:
         status = 'Approved'
     else:
         status = 'Pending Manager'
-        
     cursor.execute("UPDATE attendance SET check_out_time=%s, checkout_status=%s WHERE user_id=%s AND date=%s", (now, status, user_id, date_today))
     conn.commit()
     conn.close()
@@ -183,7 +176,6 @@ def end_break(user_id, break_start_time_str):
     break_start = datetime.strptime(break_start_time_str, "%Y-%m-%d %H:%M:%S")
     elapsed_seconds = int((now - break_start).total_seconds())
     date_today = datetime.now().strftime("%Y-%m-%d")
-    
     cursor.execute("UPDATE attendance SET on_break=0, break_seconds = break_seconds + %s, break_start_time=NULL WHERE user_id=%s AND date=%s", (elapsed_seconds, user_id, date_today))
     conn.commit()
     conn.close()
@@ -295,7 +287,6 @@ def get_directory_df(branch_id=None):
 def get_monthly_attendance_ranking():
     current_month = datetime.now().strftime("%Y-%m")
     days_in_month_so_far = datetime.now().day
-    
     query = f"""
         SELECT u.full_name AS "Employee", u.role AS "Role", COALESCE(b.branch_name, 'Corporate') AS "Branch",
                COUNT(DISTINCT a.date) AS "Days_Worked"
@@ -450,7 +441,7 @@ if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
 # =========================================================
-# 🔴 LOGIN PAGE
+# 🔴 THE "MOVING EYES" LOGIN WITH ADMIN SIGN-UP SYSTEM
 # =========================================================
 if not st.session_state['logged_in']:
     
@@ -458,18 +449,182 @@ if not st.session_state['logged_in']:
     <style>
     .stApp { background-color: #F4F7F8 !important; }
     header { visibility: hidden; }
-    [data-testid="stForm"] { background-color: #FFFFFF !important; border: none !important; border-radius: 30px !important; box-shadow: 0px 15px 50px rgba(0, 0, 0, 0.08) !important; padding: 40px 40px !important; margin-top: 50px !important; }
-    .welcome-text { text-align: center; font-size: 32px; font-weight: 900; color: #1A202C !important; margin-bottom: 30px; line-height: 1.2; font-family: 'Arial Black', sans-serif; }
-    .welcome-subtext { font-size: 16px; color: #1484A6; font-weight: 700; font-family: sans-serif; }
-    .stTextInput label { color: #4A5568 !important; font-weight: 700 !important; font-size: 15px !important; margin-bottom: 7px; }
-    .stTextInput div[data-baseweb="input"] { background-color: #EDF2F7 !important; border: 2px solid transparent !important; border-radius: 12px !important; transition: all 0.3s; }
-    .stTextInput div[data-baseweb="input"]:focus-within { border: 2px solid #1484A6 !important; }
-    .stTextInput input { color: #1A202C !important; -webkit-text-fill-color: #1A202C !important; caret-color: #1A202C !important; padding: 14px !important; font-size: 16px !important; }
-    .stTextInput input::placeholder { color: #A0AEC0 !important; -webkit-text-fill-color: #A0AEC0 !important; }
-    [data-testid="stFormSubmitButton"] button { background-color: #111111 !important; color: #FFFFFF !important; border-radius: 12px !important; font-weight: 900 !important; font-size: 16px !important; padding: 10px 30px !important; border: none !important; transition: all 0.3s ease; margin-top: 15px; }
-    [data-testid="stFormSubmitButton"] button:hover { background-color: #333333 !important; transform: translateY(-2px); }
+    
+    [data-testid="stForm"] {
+        background-color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 30px !important;
+        box-shadow: 0px 15px 50px rgba(0, 0, 0, 0.08) !important;
+        padding: 40px 40px !important;
+        margin-top: 50px !important;
+    }
+    
+    .welcome-text {
+        text-align: center;
+        font-size: 32px;
+        font-weight: 900;
+        color: #1A202C !important;
+        margin-bottom: 30px;
+        line-height: 1.2;
+        font-family: 'Arial Black', sans-serif;
+    }
+    .welcome-subtext {
+        font-size: 16px;
+        color: #1484A6;
+        font-weight: 700;
+        font-family: sans-serif;
+    }
+
+    .stTextInput label {
+        color: #4A5568 !important;
+        font-weight: 700 !important;
+        font-size: 15px !important;
+        margin-bottom: 7px;
+    }
+    
+    .stTextInput div[data-baseweb="input"] {
+        background-color: #EDF2F7 !important; 
+        border: 2px solid transparent !important;
+        border-radius: 12px !important;
+        transition: all 0.3s;
+    }
+    .stTextInput div[data-baseweb="input"]:focus-within {
+        border: 2px solid #1484A6 !important;
+    }
+    
+    .stTextInput input {
+        color: #1A202C !important;
+        -webkit-text-fill-color: #1A202C !important;
+        caret-color: #1A202C !important;
+        padding: 14px !important;
+        font-size: 16px !important;
+    }
+    .stTextInput input::placeholder {
+        color: #A0AEC0 !important;
+        -webkit-text-fill-color: #A0AEC0 !important;
+    }
+    
+    [data-testid="stIconMaterial"] {
+        color: #4A5568 !important;
+    }
+    
+    [data-testid="stFormSubmitButton"] button {
+        background-color: #111111 !important;
+        color: #FFFFFF !important;
+        border-radius: 12px !important;
+        font-weight: 900 !important;
+        font-size: 16px !important;
+        padding: 10px 30px !important;
+        border: none !important;
+        transition: all 0.3s ease;
+        margin-top: 15px;
+    }
+    [data-testid="stFormSubmitButton"] button:hover {
+        background-color: #333333 !important;
+        transform: translateY(-2px);
+    }
+    
+    .robot-container {
+        display: flex;
+        justify-content: center;
+        align-items: end;
+        height: 80px;
+        margin-bottom: -70px;
+        position: relative;
+        z-index: 10;
+    }
+    .robot-face {
+        width: 90px;
+        height: 70px;
+        background-color: #D1D5DB; 
+        border-radius: 20px 20px 5px 5px; 
+        position: relative;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 15px;
+        box-shadow: 0px -5px 15px rgba(0,0,0,0.05);
+    }
+    .eye {
+        width: 26px;
+        height: 26px;
+        background-color: #FFFFFF;
+        border-radius: 50%;
+        position: relative;
+        overflow: hidden;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        border: 2px solid #A0AEC0;
+    }
+    .pupil {
+        width: 12px;
+        height: 12px;
+        background-color: #1A202C;
+        border-radius: 50%;
+        position: absolute;
+        transition: transform 0.1s ease-out; 
+    }
+    .eyelid {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 0%;
+        background-color: #A0AEC0; 
+        transition: height 0.2s ease-in-out; 
+        z-index: 2;
+    }
     </style>
     """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="robot-container">
+        <div class="robot-face">
+            <div class="eye">
+                <div class="pupil pupil-left"></div>
+                <div class="eyelid eyelid-left"></div>
+            </div>
+            <div class="eye">
+                <div class="pupil pupil-right"></div>
+                <div class="eyelid eyelid-right"></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    components.html("""
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const parentDoc = window.parent.document;
+        function attachInteractions() {
+            const pupils = parentDoc.querySelectorAll('.pupil');
+            const eyelids = parentDoc.querySelectorAll('.eyelid');
+            const inputs = parentDoc.querySelectorAll('input');
+            if (inputs.length < 2 || pupils.length === 0) {
+                setTimeout(attachInteractions, 300);
+                return;
+            }
+            const passwordInput = inputs[1];
+            parentDoc.addEventListener('mousemove', (e) => {
+                if (parentDoc.activeElement === passwordInput) return; 
+                pupils.forEach(pupil => {
+                    const rect = pupil.getBoundingClientRect();
+                    const x = Math.max(-6, Math.min(6, (e.clientX - rect.left) / 30));
+                    const y = Math.max(-6, Math.min(6, (e.clientY - rect.top) / 30));
+                    pupil.style.transform = `translate(${x}px, ${y}px)`;
+                });
+            });
+            passwordInput.addEventListener('focus', () => {
+                eyelids.forEach(el => el.style.height = '100%');
+                pupils.forEach(pupil => pupil.style.transform = `translate(0px, 0px)`);
+            });
+            passwordInput.addEventListener('blur', () => {
+                eyelids.forEach(el => el.style.height = '0%');
+            });
+        }
+        attachInteractions();
+    });
+    </script>
+    """, height=0, width=0)
 
     col1, col2, col3 = st.columns([1, 1.2, 1])
     
@@ -559,7 +714,6 @@ else:
                     if uploaded_file:
                         file_name = uploaded_file.name
                         safe_name = f"{datetime.now().strftime('%H%M%S')}_{file_name}"
-                        # 🔴 ONLINE FILE UPLOAD TO SUPABASE STORAGE
                         file_bytes = uploaded_file.getvalue()
                         supabase.storage.from_("uploads").upload(safe_name, file_bytes)
                         file_path = safe_name
