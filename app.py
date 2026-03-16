@@ -41,7 +41,7 @@ def get_df(query, params=None):
     return df
 
 # =========================================================
-# 🔴 THE BROWSER-LEVEL GPS FIX
+# 🔴 THE BROWSER-LEVEL GPS FIX (SINGLE-LINE TO PREVENT TEXT SPILL)
 # =========================================================
 def get_url_coords():
     try:
@@ -52,51 +52,8 @@ def get_url_coords():
         pass
     return None, None
 
-# This iframe forces the browser to allow the GPS permission pop-up
-NATIVE_GPS_IFRAME = """
-<iframe srcdoc="
-    <html>
-        <head>
-            <style>
-                body { margin: 0; padding: 0; font-family: sans-serif; }
-                button { background-color: #1484A6; color: white; padding: 12px 20px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); transition: 0.3s; }
-                button:active { background-color: #0e607a; }
-            </style>
-        </head>
-        <body>
-            <button id='btn' onclick='getLoc()'>📍 TAP HERE TO GET GPS LOCATION</button>
-            <script>
-                function getLoc() {
-                    var btn = document.getElementById('btn');
-                    btn.innerText = '⏳ Locating... Please check for a pop-up...';
-                    btn.style.backgroundColor = '#E2E8F0';
-                    btn.style.color = '#1A202C';
-                    
-                    if (navigator.geolocation) {
-                        navigator.geolocation.getCurrentPosition(
-                            function(pos) {
-                                var lat = pos.coords.latitude;
-                                var lon = pos.coords.longitude;
-                                var currentUrl = window.parent.location.href.split('?')[0];
-                                window.parent.location.href = currentUrl + '?lat=' + lat + '&lon=' + lon;
-                            },
-                            function(err) {
-                                alert('GPS Error: You must tap ALLOW when the browser asks for your location.');
-                                btn.innerText = '📍 TAP HERE TO GET GPS LOCATION';
-                                btn.style.backgroundColor = '#1484A6';
-                                btn.style.color = 'white';
-                            },
-                            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-                        );
-                    } else {
-                        alert('Geolocation not supported by your phone/browser.');
-                    }
-                }
-            </script>
-        </body>
-    </html>
-" width="100%" height="70px" style="border:none;" allow="geolocation"></iframe>
-"""
+# This is on one massive line so Streamlit cannot break it
+NATIVE_GPS_IFRAME = """<iframe srcdoc="<html><head><style>body{margin:0;padding:0;font-family:sans-serif;}button{background-color:#1484A6;color:white;padding:12px 20px;border:none;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%;box-shadow:0px 4px 6px rgba(0,0,0,0.1);transition:0.3s;}button:active{background-color:#0e607a;}</style></head><body><button id='btn' onclick='getLoc()'>📍 TAP HERE TO GET GPS LOCATION</button><script>function getLoc(){var btn = document.getElementById('btn');btn.innerText = '⏳ Locating... Please check for a pop-up...';btn.style.backgroundColor = '#E2E8F0';btn.style.color = '#1A202C';if(navigator.geolocation){navigator.geolocation.getCurrentPosition(function(pos){var lat = pos.coords.latitude;var lon = pos.coords.longitude;var currentUrl = window.parent.location.href.split('?')[0];window.parent.location.href = currentUrl + '?lat=' + lat + '&lon=' + lon;},function(err){alert('GPS Error: You must tap ALLOW when the browser asks for your location.');btn.innerText = '📍 TAP HERE TO GET GPS LOCATION';btn.style.backgroundColor = '#1484A6';btn.style.color = 'white';},{enableHighAccuracy:true, timeout:10000, maximumAge:0});}else{alert('Geolocation not supported.');}}</script></body></html>" width="100%" height="70px" style="border:none;" allow="geolocation"></iframe>"""
 
 # =========================================================
 # VISIBILITY FIX
@@ -882,7 +839,6 @@ else:
                 with col_map:
                     st.write("### 📍 Step 1: Get GPS Location")
                     
-                    # --- 🔴 PURE HTML/JS REPLACEMENT WITH BYPASS ---
                     worker_lat, worker_lon = get_url_coords()
                     
                     if worker_lat and worker_lon:
@@ -892,9 +848,7 @@ else:
                             except: pass
                             st.rerun()
                     else:
-                        # This injects the un-blockable iframe button
                         st.markdown(NATIVE_GPS_IFRAME, unsafe_allow_html=True)
-                    # -----------------------------------------------
                     
                     st.write("### 📍 Step 2: Verify on Map & Check In")
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=18)
@@ -1045,7 +999,6 @@ else:
                     
                     st.write("### 📍 Step 1: Pinpoint Delivery Location")
                     
-                    # --- 🔴 PURE HTML/JS REPLACEMENT FOR DRIVERS ---
                     d_lat, d_lon = get_url_coords()
                     
                     if d_lat and d_lon:
@@ -1056,7 +1009,6 @@ else:
                             st.rerun()
                     else:
                         st.markdown(NATIVE_GPS_IFRAME, unsafe_allow_html=True)
-                    # -----------------------------------------------
                     
                     if st.button("📦 Log Delivery at Current Location", use_container_width=True):
                         if d_lat and d_lon:
