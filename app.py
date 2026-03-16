@@ -11,6 +11,7 @@ from supabase import create_client
 import os
 import extra_streamlit_components as stx
 import time
+import math
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
@@ -54,6 +55,19 @@ div[data-testid="InputInstructions"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# --- STRICT GEOFENCING FUNCTION ---
+def calculate_distance(lat1, lon1, lat2, lon2):
+    if None in [lat1, lon1, lat2, lon2] or 0.0 in [lat1, lon1, lat2, lon2]:
+        return float('inf') 
+    R = 6371000 
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
 # --- Database Helper Functions ---
 def authenticate_user(phone, password):
     conn = get_connection()
@@ -62,6 +76,18 @@ def authenticate_user(phone, password):
     user = cursor.fetchone()
     conn.close()
     return user
+
+# 🔴 NEW: DATABASE FETCH TO PREVENT "NONE" ROLE BUG
+def get_user_by_id(user_id):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, full_name, role, branch_id, performance_status FROM users WHERE user_id=%s", (user_id,))
+        user = cursor.fetchone()
+        conn.close()
+        return user
+    except Exception:
+        return None
 
 def log_notification(sender_id, target_role, target_branch_id, target_user_id, message, file_path=None, file_name=None):
     conn = get_connection()
@@ -304,18 +330,14 @@ def add_branch(name, lat, lon):
     conn.commit()
     conn.close()
 
-# 🔴 NEW FUNCTION: SAFELY DELETE BRANCH
 def delete_branch(branch_id):
     conn = get_connection()
     cursor = conn.cursor()
-    # 1. Safely move workers to Corporate so their accounts aren't orphaned
     cursor.execute("UPDATE users SET branch_id=NULL WHERE branch_id=%s", (branch_id,))
-    # 2. Clear related branch data
     cursor.execute("DELETE FROM daily_sales WHERE branch_id=%s", (branch_id,))
     cursor.execute("DELETE FROM expenses WHERE branch_id=%s", (branch_id,))
     cursor.execute("DELETE FROM meetings WHERE branch_id=%s", (branch_id,))
     cursor.execute("DELETE FROM notifications WHERE target_branch_id=%s", (branch_id,))
-    # 3. Delete the actual branch
     cursor.execute("DELETE FROM branches WHERE branch_id=%s", (branch_id,))
     conn.commit()
     conn.close()
@@ -465,13 +487,19 @@ if 'logout_clicked' not in st.session_state:
 
 cookie_uid = cookie_manager.get(cookie="wp_user_id")
 
+# 🔴 FIX: WE NOW FETCH THE FRESH ROLE DIRECTLY FROM THE DB! NO MORE "NONE" ERRORS.
 if cookie_uid and not st.session_state['logged_in'] and not st.session_state['logout_clicked']:
-    st.session_state['logged_in'] = True
-    st.session_state['user_id'] = int(cookie_uid)
-    st.session_state['name'] = cookie_manager.get(cookie="wp_name")
-    st.session_state['role'] = cookie_manager.get(cookie="wp_role")
-    b_id = cookie_manager.get(cookie="wp_branch_id")
-    st.session_state['branch_id'] = int(b_id) if b_id and b_id != 'None' else None
+    user_data = get_user_by_id(int(float(str(cookie_uid))))
+    
+    if user_data:
+        st.session_state['logged_in'] = True
+        st.session_state['user_id'] = user_data[0]
+        st.session_state['name'] = user_data[1]
+        st.session_state['role'] = user_data[2]
+        st.session_state['branch_id'] = user_data[3]
+        st.session_state['status'] = user_data[4]
+    else:
+        st.session_state['logout_clicked'] = True
 
 # =========================================================
 # THE LOGIN SYSTEM
@@ -573,9 +601,6 @@ if not st.session_state['logged_in']:
                     st.session_state['status'] = user[4]
                     
                     cookie_manager.set("wp_user_id", str(user[0]), key="set_u")
-                    cookie_manager.set("wp_name", str(user[1]), key="set_n")
-                    cookie_manager.set("wp_role", str(user[2]), key="set_r")
-                    cookie_manager.set("wp_branch_id", str(user[3]), key="set_b")
                     
                     st.rerun()
                 else:
@@ -660,15 +685,9 @@ else:
         st.session_state['logout_clicked'] = True
         st.session_state['logged_in'] = False
         
-        all_cookies = cookie_manager.get_all()
-        if "wp_user_id" in all_cookies:
+        try:
             cookie_manager.delete("wp_user_id", key="del_u")
-        if "wp_name" in all_cookies:
-            cookie_manager.delete("wp_name", key="del_n")
-        if "wp_role" in all_cookies:
-            cookie_manager.delete("wp_role", key="del_r")
-        if "wp_branch_id" in all_cookies:
-            cookie_manager.delete("wp_branch_id", key="del_b")
+        except: pass
             
         time.sleep(1)
         st.rerun()
@@ -729,7 +748,6 @@ else:
                         st.error("Branch Name is required.")
             
             st.write("---")
-            # 🔴 NEW FEATURE: DELETE BRANCH
             st.write("### Manage Existing Branches")
             branches_df = get_all_branches_df()
             
@@ -866,15 +884,17 @@ else:
                     worker_lon = location.get('longitude') if location else None
                     
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=18)
-                    folium.Circle(location=[b_lat, b_lon], radius=15, color="blue", fill=True, fill_opacity=0.2).add_to(m)
+                    folium.Circle(location=[b_lat, b_lon], radius=100, color="blue", fill=True, fill_opacity=0.2).add_to(m)
                     folium.Marker([b_lat, b_lon], tooltip="Branch", icon=folium.Icon(color="green", icon="building", prefix='fa')).add_to(m)
                     if worker_lat and worker_lon:
                         folium.Marker([worker_lat, worker_lon], tooltip="You", icon=folium.Icon(color="red", icon="user", prefix='fa')).add_to(m)
                     st_folium(m, width=700, height=400)
                     
                     if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
-                        if st.session_state['role'] in ['Marketer', 'Driver']:
-                            if worker_lat and worker_lon:
+                        if not worker_lat or not worker_lon:
+                            st.error("⚠️ GPS Error: Please click the crosshairs icon on the map to find your location first.")
+                        else:
+                            if st.session_state['role'] in ['Marketer', 'Driver']:
                                 log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                 if st.session_state['role'] == 'Driver':
                                     log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
@@ -885,12 +905,15 @@ else:
                                 st.success("Location recorded. Shift started!")
                                 st.rerun()
                             else:
-                                st.error(f"{st.session_state['role']}s MUST click the GPS icon to record their location before checking in!")
-                        else:
-                            log_attendance(st.session_state['user_id'], worker_lat or 0.0, worker_lon or 0.0)
-                            st.cache_data.clear()
-                            st.success("Shift started!")
-                            st.rerun()
+                                distance_to_branch = calculate_distance(b_lat, b_lon, worker_lat, worker_lon)
+                                
+                                if distance_to_branch <= 100:
+                                    log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
+                                    st.cache_data.clear()
+                                    st.success(f"Shift started! Verified on-site ({int(distance_to_branch)}m away).")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Security Block: You are {int(distance_to_branch)} meters away from the branch. You must be within 100 meters to check in.")
                             
             else:
                 st.info("You operate across all branches. Click below to start your shift.")
@@ -1338,7 +1361,6 @@ else:
                         st.cache_data.clear()
                         st.success("Checkout requested!")
                         st.rerun()
-
 
     # =========================================================
     # CEO DASHBOARD 
