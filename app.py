@@ -304,6 +304,22 @@ def add_branch(name, lat, lon):
     conn.commit()
     conn.close()
 
+# 🔴 NEW FUNCTION: SAFELY DELETE BRANCH
+def delete_branch(branch_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    # 1. Safely move workers to Corporate so their accounts aren't orphaned
+    cursor.execute("UPDATE users SET branch_id=NULL WHERE branch_id=%s", (branch_id,))
+    # 2. Clear related branch data
+    cursor.execute("DELETE FROM daily_sales WHERE branch_id=%s", (branch_id,))
+    cursor.execute("DELETE FROM expenses WHERE branch_id=%s", (branch_id,))
+    cursor.execute("DELETE FROM meetings WHERE branch_id=%s", (branch_id,))
+    cursor.execute("DELETE FROM notifications WHERE target_branch_id=%s", (branch_id,))
+    # 3. Delete the actual branch
+    cursor.execute("DELETE FROM branches WHERE branch_id=%s", (branch_id,))
+    conn.commit()
+    conn.close()
+
 def add_user(name, phone, password, role, branch_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -644,19 +660,16 @@ else:
         st.session_state['logout_clicked'] = True
         st.session_state['logged_in'] = False
         
-        try:
+        all_cookies = cookie_manager.get_all()
+        if "wp_user_id" in all_cookies:
             cookie_manager.delete("wp_user_id", key="del_u")
-        except: pass
-        try:
+        if "wp_name" in all_cookies:
             cookie_manager.delete("wp_name", key="del_n")
-        except: pass
-        try:
+        if "wp_role" in all_cookies:
             cookie_manager.delete("wp_role", key="del_r")
-        except: pass
-        try:
+        if "wp_branch_id" in all_cookies:
             cookie_manager.delete("wp_branch_id", key="del_b")
-        except: pass
-        
+            
         time.sleep(1)
         st.rerun()
 
@@ -711,12 +724,35 @@ else:
                         add_branch(new_b_name, new_b_lat, new_b_lon)
                         st.cache_data.clear()
                         st.success(f"Branch '{new_b_name}' successfully added to the database.")
+                        st.rerun()
                     else:
                         st.error("Branch Name is required.")
             
             st.write("---")
-            st.write("### Current Active Branches")
-            st.dataframe(get_all_branches_df(), hide_index=True, use_container_width=True)
+            # 🔴 NEW FEATURE: DELETE BRANCH
+            st.write("### Manage Existing Branches")
+            branches_df = get_all_branches_df()
+            
+            if not branches_df.empty:
+                delete_branch_options = {"-- Select Branch --": None}
+                for _, row in branches_df.iterrows():
+                    delete_branch_options[row['Branch_Name']] = row['Branch_ID']
+                    
+                selected_del_branch = st.selectbox("Select Branch to Delete", list(delete_branch_options.keys()))
+                
+                if selected_del_branch != "-- Select Branch --":
+                    st.warning(f"⚠️ Warning: Deleting {selected_del_branch} will reassign its workers to Corporate and delete its sales history.")
+                    if st.button("🗑️ Delete Branch", type="primary"):
+                        delete_branch(delete_branch_options[selected_del_branch])
+                        st.cache_data.clear()
+                        st.success(f"{selected_del_branch} deleted successfully!")
+                        time.sleep(1)
+                        st.rerun()
+                        
+                st.write("---")
+                st.dataframe(branches_df, hide_index=True, use_container_width=True)
+            else:
+                st.info("No branches currently exist.")
 
         with tab2:
             st.write("### Register a New Employee")
