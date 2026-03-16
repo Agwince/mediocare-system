@@ -80,7 +80,7 @@ div[data-testid="InputInstructions"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- STRICT GEOFENCING FUNCTION (FIXED FOR DECIMALS) ---
+# --- STRICT GEOFENCING FUNCTION ---
 def calculate_distance(lat1, lon1, lat2, lon2):
     if None in [lat1, lon1, lat2, lon2] or 0.0 in [lat1, lon1, lat2, lon2]:
         return float('inf') 
@@ -328,6 +328,20 @@ def get_weekly_rankings_df():
         df['Rank'] = df['Weekly Sales (KES)'].rank(method='min', ascending=False).astype(int)
     return df
 
+def get_monthly_sales_rankings_df():
+    query = '''
+        SELECT b.branch_name AS "Branch_Name", 
+               COALESCE(SUM(ds.total_sales), 0) AS "Monthly Sales (KES)"
+        FROM branches b
+        LEFT JOIN daily_sales ds ON b.branch_id = ds.branch_id AND CAST(ds.date AS DATE) >= CURRENT_DATE - INTERVAL '30 days'
+        GROUP BY b.branch_name
+        ORDER BY "Monthly Sales (KES)" DESC
+    '''
+    df = get_df(query)
+    if not df.empty:
+        df['Rank'] = df['Monthly Sales (KES)'].rank(method='min', ascending=False).astype(int)
+    return df
+
 def get_directory_df(branch_id=None):
     if branch_id:
         query = "SELECT full_name AS \"Name\", role AS \"Role\", phone_number AS \"Phone_Number\", performance_status AS \"Performance_Status\" FROM users WHERE role IN ('Worker', 'Driver', 'Marketer') AND branch_id = %s"
@@ -420,7 +434,6 @@ def delete_user(user_id):
     conn.close()
 
 def get_all_branches_df():
-    # Will pull shift_hours if it exists, otherwise defaults to 8
     try:
         return get_df("SELECT branch_id AS \"Branch_ID\", branch_name AS \"Branch_Name\", latitude AS \"Latitude\", longitude AS \"Longitude\", COALESCE(shift_hours, 8.0) AS \"Shift_Hours\" FROM branches")
     except Exception:
@@ -919,7 +932,6 @@ else:
                     st.write("### 📍 Step 2: Verify on Map & Check In")
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=19)
                     
-                    # 🔴 RADIUS REDUCED TO 10 METERS 🔴
                     folium.Circle(location=[b_lat, b_lon], radius=10, color="blue", fill=True, fill_opacity=0.2).add_to(m)
                     
                     folium.Marker([b_lat, b_lon], tooltip="Branch", icon=folium.Icon(color="green", icon="building", prefix='fa')).add_to(m)
@@ -946,7 +958,6 @@ else:
                             else:
                                 distance_to_branch = calculate_distance(b_lat, b_lon, worker_lat, worker_lon)
                                 
-                                # 🔴 DISTANCE SECURITY LOCK REDUCED TO 10 METERS 🔴
                                 if distance_to_branch <= 10:
                                     log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                     st.cache_data.clear()
@@ -1016,7 +1027,6 @@ else:
                 
                 col1, col2 = st.columns([4, 1])
                 with col1:
-                    # 🔴 DYNAMIC SHIFT PROGRESS BAR 🔴
                     branch_shift_hours = get_branch_shift_hours(st.session_state.get('branch_id'))
                     shift_target_seconds = branch_shift_hours * 3600
                     
@@ -1201,14 +1211,32 @@ else:
                         if not my_rank_data.empty:
                             rank = my_rank_data['Rank'].values[0]
                             sales = my_rank_data['Weekly Sales (KES)'].values[0]
-                            st.metric(label="Your Rank in Company", value=f"#{rank} out of {len(rank_df)}")
+                            st.metric(label="Your Weekly Rank", value=f"#{rank} out of {len(rank_df)}")
                             st.metric(label="Your Total Weekly Sales", value=f"KES {sales:,.2f}")
                             st.write("---")
                             st.dataframe(rank_df[['Rank', 'Branch_Name', 'Weekly Sales (KES)']], use_container_width=True, hide_index=True)
                         else:
-                            st.info("Your branch hasn't registered sales yet.")
+                            st.info("Your branch hasn't registered sales this week.")
                     else:
-                        st.info("No sales data available for ranking.")
+                        st.info("No weekly sales data available for ranking.")
+                        
+                    st.write("---")
+                    st.write("### 🏆 Your Branch Ranking (Past 30 Days)")
+                    m_rank_df = get_monthly_sales_rankings_df()
+                    if not m_rank_df.empty:
+                        my_branch_name = get_branch_name(st.session_state['branch_id'])
+                        my_m_rank_data = m_rank_df[m_rank_df['Branch_Name'] == my_branch_name]
+                        if not my_m_rank_data.empty:
+                            m_rank = my_m_rank_data['Rank'].values[0]
+                            m_sales = my_m_rank_data['Monthly Sales (KES)'].values[0]
+                            st.metric(label="Your Monthly Rank", value=f"#{m_rank} out of {len(m_rank_df)}")
+                            st.metric(label="Your Total Monthly Sales", value=f"KES {m_sales:,.2f}")
+                            st.write("---")
+                            st.dataframe(m_rank_df[['Rank', 'Branch_Name', 'Monthly Sales (KES)']], use_container_width=True, hide_index=True)
+                        else:
+                            st.info("Your branch hasn't registered sales this month.")
+                    else:
+                        st.info("No monthly sales data available for ranking.")
                         
                 with tab4:
                     st.write("### 📞 Employee Contact Directory")
@@ -1322,7 +1350,7 @@ else:
             elif st.session_state['role'] == "General Manager":
                 st.write("### General Manager Operations")
                 
-                gm_tab1, gm_tab2, gm_tab3, gm_tab4, gm_tab5, gm_tab6, gm_tab7 = st.tabs(["🌍 Field Approvals", "💰 Daily", "🏆 Weekly", "📅 Calendar", "📜 Finance", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
+                gm_tab1, gm_tab2, gm_tab3, gm_tab4, gm_tab5, gm_tab6, gm_tab7 = st.tabs(["🌍 Field Approvals", "💰 Daily", "🏆 Leaderboards", "📅 Calendar", "📜 Finance", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
                 
                 with gm_tab1:
                     st.write("### 🌍 Field Marketer & Driver Approvals")
@@ -1371,6 +1399,14 @@ else:
                         st.dataframe(rank_df[['Rank', 'Branch_Name', 'Weekly Sales (KES)']], use_container_width=True, hide_index=True)
                     else:
                         st.info("No sales data available for the week.")
+                        
+                    st.write("---")
+                    st.write("### Monthly Branch Leaderboard")
+                    m_rank_df = get_monthly_sales_rankings_df()
+                    if not m_rank_df.empty:
+                        st.dataframe(m_rank_df[['Rank', 'Branch_Name', 'Monthly Sales (KES)']], use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No sales data available for the month.")
                         
                 with gm_tab4:
                     st.write("### 📅 Historical Data Explorer")
@@ -1451,6 +1487,21 @@ else:
                 else:
                     st.info("No data in last 7 days.")
                     
+                st.write("---")
+                st.write("### 📊 Monthly Sales vs Expenses")
+                monthly_query = '''
+                    SELECT b.branch_name AS "Branch_Name",
+                        (SELECT COALESCE(SUM(total_sales), 0) FROM daily_sales WHERE branch_id = b.branch_id AND CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '30 days') AS "Sales (KES)",
+                        (SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE branch_id = b.branch_id AND CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '30 days') AS "Expenses (KES)"
+                    FROM branches b
+                '''
+                monthly_df = get_df(monthly_query)
+                if not monthly_df.empty and (monthly_df['Sales (KES)'].sum() > 0 or monthly_df['Expenses (KES)'].sum() > 0):
+                    m_chart_data = monthly_df.set_index('Branch_Name')
+                    st.bar_chart(m_chart_data, color=["#1484A6", "#EF4444"])
+                else:
+                    st.info("No data in last 30 days.")
+                    
             with col_g2:
                 st.write("### 🏆 Today's Rankings")
                 rank_query = f"SELECT b.branch_name AS \"Branch\", SUM(ds.total_sales) AS \"Total Sales (KES)\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id WHERE ds.date = '{date_today}' GROUP BY b.branch_name ORDER BY \"Total Sales (KES)\" DESC"
@@ -1460,6 +1511,14 @@ else:
                     st.dataframe(rank_df, use_container_width=True)
                 else:
                     st.warning("No sales reports today.")
+                    
+                st.write("---")
+                st.write("### 🏆 Monthly Branch Rankings")
+                m_rank_df = get_monthly_sales_rankings_df()
+                if not m_rank_df.empty:
+                    st.dataframe(m_rank_df[['Rank', 'Branch_Name', 'Monthly Sales (KES)']], use_container_width=True, hide_index=True)
+                else:
+                    st.warning("No sales data available for the month.")
                 
         with tab2:
             st.write("### Live Workforce Roster")
