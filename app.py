@@ -5,7 +5,6 @@ from datetime import datetime
 import datetime as dt
 import folium
 from streamlit_folium import st_folium
-from streamlit_geolocation import streamlit_geolocation
 import streamlit.components.v1 as components
 from supabase import create_client
 import os
@@ -682,6 +681,7 @@ else:
     if st.sidebar.button("Logout", type="secondary"):
         st.session_state['logout_clicked'] = True
         st.session_state['logged_in'] = False
+        st.query_params.clear()
         
         try:
             cookie_manager.delete("wp_user_id", key="del_u")
@@ -876,15 +876,56 @@ else:
                 b_lat, b_lon = branch_coords
                 col_left, col_map, col_right = st.columns([1, 2, 1])
                 with col_map:
+                    # 🔴 FLawless Native Mobile GPS System
                     st.write("### 📍 Live Location Verification")
+                    st.info("📱 **Phone Users:** Tap the button below to turn on your GPS. Make sure location permissions are allowed.")
                     
-                    # 🔴 STRICT PRODUCTION UI FOR TOMORROW
-                    st.info("📱 **Phone Users:** Ensure your GPS/Location is turned ON and allow browser permissions when prompted. Click the crosshairs button below to lock in your coordinates.")
-                    
-                    location = streamlit_geolocation()
-                    worker_lat = location.get('latitude') if location else None
-                    worker_lon = location.get('longitude') if location else None
-                    
+                    query_params = st.query_params
+                    worker_lat = None
+                    worker_lon = None
+                    if "lat" in query_params and "lon" in query_params:
+                        try:
+                            worker_lat = float(query_params.get("lat"))
+                            worker_lon = float(query_params.get("lon"))
+                        except: pass
+
+                    if not worker_lat or not worker_lon:
+                        components.html("""
+                        <div style="display: flex; justify-content: center; flex-direction: column; align-items: center; padding: 10px;">
+                            <button onclick="getLocation()" style="background-color: #1484A6; color: white; padding: 15px 30px; border: none; border-radius: 8px; font-size: 18px; font-weight: bold; cursor: pointer; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 350px;">
+                                📍 TAP TO GET LOCATION
+                            </button>
+                            <p id="status" style="font-family: sans-serif; color: #EF4444; font-weight: bold; margin-top: 15px; text-align: center;"></p>
+                        </div>
+                        <script>
+                        function getLocation() {
+                            const status = document.getElementById("status");
+                            status.innerText = "⏳ Requesting GPS... Please click 'Allow' if prompted.";
+                            if (navigator.geolocation) {
+                                navigator.geolocation.getCurrentPosition(
+                                    function(position) {
+                                        const lat = position.coords.latitude;
+                                        const lon = position.coords.longitude;
+                                        status.innerText = "✅ Location found! Locking in...";
+                                        window.parent.location.href = window.parent.location.pathname + "?lat=" + lat + "&lon=" + lon;
+                                    },
+                                    function(error) {
+                                        status.innerText = "❌ GPS Error: You must allow location access in your phone settings to check in.";
+                                    },
+                                    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+                                );
+                            } else {
+                                status.innerText = "❌ Geolocation is not supported by your browser.";
+                            }
+                        }
+                        </script>
+                        """, height=180)
+                    else:
+                        st.success("✅ GPS Coordinates Locked! You may now press Check In.")
+                        if st.button("🔄 Retake Location", use_container_width=True):
+                            st.query_params.clear()
+                            st.rerun()
+
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=18)
                     folium.Circle(location=[b_lat, b_lon], radius=100, color="blue", fill=True, fill_opacity=0.2).add_to(m)
                     folium.Marker([b_lat, b_lon], tooltip="Branch", icon=folium.Icon(color="green", icon="building", prefix='fa')).add_to(m)
@@ -894,7 +935,7 @@ else:
                     
                     if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
                         if not worker_lat or not worker_lon:
-                            st.error("⚠️ GPS Error: Location access denied. Please click the crosshairs icon above the map, and tap 'Allow' when your phone asks for permission.")
+                            st.error("⚠️ Please tap the 'TAP TO GET LOCATION' button above first.")
                         else:
                             if st.session_state['role'] in ['Marketer', 'Driver']:
                                 log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
@@ -903,6 +944,7 @@ else:
                                     log_notification(None, 'CEO', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
                                 else:
                                     log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) checked in from the field.")
+                                st.query_params.clear()
                                 st.cache_data.clear()
                                 st.success("Location recorded. Shift started!")
                                 st.rerun()
@@ -911,6 +953,7 @@ else:
                                 
                                 if distance_to_branch <= 100:
                                     log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
+                                    st.query_params.clear()
                                     st.cache_data.clear()
                                     st.success(f"Shift started! Verified on-site ({int(distance_to_branch)}m away).")
                                     st.rerun()
@@ -1026,9 +1069,45 @@ else:
                         st.rerun()
                 else:
                     st.success(f"🟢 Journey Active (ID: {active_journey})")
-                    location = streamlit_geolocation()
-                    d_lat = location.get('latitude') if location else None
-                    d_lon = location.get('longitude') if location else None
+                    
+                    # 🔴 NATIVE GPS FOR DRIVER DELIVERY
+                    query_params = st.query_params
+                    d_lat = None
+                    d_lon = None
+                    if "d_lat" in query_params and "d_lon" in query_params:
+                        try:
+                            d_lat = float(query_params.get("d_lat"))
+                            d_lon = float(query_params.get("d_lon"))
+                        except: pass
+                    
+                    if not d_lat or not d_lon:
+                        components.html("""
+                        <div style="display: flex; justify-content: center; flex-direction: column; align-items: center; padding: 10px;">
+                            <button onclick="getDelLoc()" style="background-color: #1484A6; color: white; padding: 10px 20px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; max-width: 350px;">
+                                📍 PINPOINT DELIVERY LOCATION
+                            </button>
+                            <p id="d_status" style="font-family: sans-serif; color: #EF4444; font-weight: bold; margin-top: 10px; text-align: center;"></p>
+                        </div>
+                        <script>
+                        function getDelLoc() {
+                            document.getElementById("d_status").innerText = "⏳ Finding GPS...";
+                            navigator.geolocation.getCurrentPosition(
+                                function(pos) {
+                                    window.parent.location.href = window.parent.location.pathname + "?d_lat=" + pos.coords.latitude + "&d_lon=" + pos.coords.longitude;
+                                },
+                                function(err) {
+                                    document.getElementById("d_status").innerText = "❌ GPS Error. Enable location in phone settings.";
+                                },
+                                { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+                            );
+                        }
+                        </script>
+                        """, height=100)
+                    else:
+                        st.success("✅ Delivery Location Locked!")
+                        if st.button("🔄 Retake Location", use_container_width=True):
+                            st.query_params.clear()
+                            st.rerun()
                     
                     if st.button("📦 Log Delivery at Current Location", use_container_width=True):
                         if d_lat and d_lon:
@@ -1037,9 +1116,12 @@ else:
                             msg = f"📦 {st.session_state['name']} logged a delivery stop. [📍 View Location]({map_link})"
                             log_notification(None, 'General Manager', None, None, msg)
                             log_notification(None, 'CEO', None, None, msg)
+                            st.query_params.clear()
                             st.success("Delivery logged!")
+                            time.sleep(1)
+                            st.rerun()
                         else:
-                            st.error("Click the location target icon first!")
+                            st.error("Click the PINPOINT DELIVERY LOCATION button first!")
                     if st.button("🏁 Return to Branch & End Journey", use_container_width=True, type="secondary"):
                         end_journey(active_journey)
                         log_notification(None, 'General Manager', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
