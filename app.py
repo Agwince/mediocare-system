@@ -5,12 +5,11 @@ from datetime import datetime
 import datetime as dt
 import folium
 from streamlit_folium import st_folium
-import streamlit.components.v1 as components
-from supabase import create_client
 import os
 import extra_streamlit_components as stx
 import time
 import math
+from supabase import create_client
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
@@ -42,7 +41,7 @@ def get_df(query, params=None):
     return df
 
 # =========================================================
-# 🔴 BULLETPROOF NATIVE GPS LOGIC
+# 🔴 THE BROWSER-LEVEL GPS FIX
 # =========================================================
 def get_url_coords():
     try:
@@ -51,48 +50,52 @@ def get_url_coords():
             return float(params['lat']), float(params['lon'])
     except Exception:
         pass
-    try:
-        params = st.experimental_get_query_params()
-        if 'lat' in params and 'lon' in params:
-            return float(params['lat'][0]), float(params['lon'][0])
-    except Exception:
-        pass
     return None, None
 
-NATIVE_GPS_SCRIPT = """
-<script>
-function getLocation() {
-    var btn = document.getElementById("btn");
-    btn.innerHTML = "⏳ Locating... Please wait...";
-    btn.style.backgroundColor = "#E2E8F0";
-    btn.style.color = "#1A202C";
-    
-    if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(showPosition, showError, {enableHighAccuracy: true});
-    } else {
-        alert("Geolocation is not supported by this browser.");
-        btn.innerHTML = "📍 TAP HERE TO GET GPS LOCATION";
-        btn.style.backgroundColor = "#1484A6";
-        btn.style.color = "white";
-    }
-}
-function showPosition(position) {
-    var lat = position.coords.latitude;
-    var lon = position.coords.longitude;
-    var currentUrl = window.parent.location.href.split('?')[0];
-    window.parent.location.href = currentUrl + "?lat=" + lat + "&lon=" + lon;
-}
-function showError(error) {
-    var btn = document.getElementById("btn");
-    btn.innerHTML = "📍 TAP HERE TO GET GPS LOCATION";
-    btn.style.backgroundColor = "#1484A6";
-    btn.style.color = "white";
-    alert("Error: Please make sure Location/GPS is turned ON on your phone, and allow the browser permission.");
-}
-</script>
-<button id="btn" onclick="getLocation()" style="background-color: #1484A6; color: white; padding: 12px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; width: 100%; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); font-family: sans-serif;">
-    📍 TAP HERE TO GET GPS LOCATION
-</button>
+# This iframe forces the browser to allow the GPS permission pop-up
+NATIVE_GPS_IFRAME = """
+<iframe srcdoc="
+    <html>
+        <head>
+            <style>
+                body { margin: 0; padding: 0; font-family: sans-serif; }
+                button { background-color: #1484A6; color: white; padding: 12px 20px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); transition: 0.3s; }
+                button:active { background-color: #0e607a; }
+            </style>
+        </head>
+        <body>
+            <button id='btn' onclick='getLoc()'>📍 TAP HERE TO GET GPS LOCATION</button>
+            <script>
+                function getLoc() {
+                    var btn = document.getElementById('btn');
+                    btn.innerText = '⏳ Locating... Please check for a pop-up...';
+                    btn.style.backgroundColor = '#E2E8F0';
+                    btn.style.color = '#1A202C';
+                    
+                    if (navigator.geolocation) {
+                        navigator.geolocation.getCurrentPosition(
+                            function(pos) {
+                                var lat = pos.coords.latitude;
+                                var lon = pos.coords.longitude;
+                                var currentUrl = window.parent.location.href.split('?')[0];
+                                window.parent.location.href = currentUrl + '?lat=' + lat + '&lon=' + lon;
+                            },
+                            function(err) {
+                                alert('GPS Error: You must tap ALLOW when the browser asks for your location.');
+                                btn.innerText = '📍 TAP HERE TO GET GPS LOCATION';
+                                btn.style.backgroundColor = '#1484A6';
+                                btn.style.color = 'white';
+                            },
+                            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                        );
+                    } else {
+                        alert('Geolocation not supported by your phone/browser.');
+                    }
+                }
+            </script>
+        </body>
+    </html>
+" width="100%" height="70px" style="border:none;" allow="geolocation"></iframe>
 """
 
 # =========================================================
@@ -571,58 +574,8 @@ if not st.session_state['logged_in']:
     .stTextInput input::placeholder { color: #A0AEC0 !important; -webkit-text-fill-color: #A0AEC0 !important; }
     [data-testid="stFormSubmitButton"] button { background-color: #111111 !important; color: #FFFFFF !important; border-radius: 12px !important; font-weight: 900 !important; font-size: 16px !important; padding: 10px 30px !important; border: none !important; transition: all 0.3s ease; margin-top: 15px; }
     [data-testid="stFormSubmitButton"] button:hover { background-color: #333333 !important; transform: translateY(-2px); }
-    .robot-container { display: flex; justify-content: center; align-items: end; height: 80px; margin-bottom: -70px; position: relative; z-index: 10; }
-    .robot-face { width: 90px; height: 70px; background-color: #D1D5DB; border-radius: 20px 20px 5px 5px; position: relative; display: flex; justify-content: center; align-items: center; gap: 15px; box-shadow: 0px -5px 15px rgba(0,0,0,0.05); }
-    .eye { width: 26px; height: 26px; background-color: #FFFFFF; border-radius: 50%; position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center; border: 2px solid #A0AEC0; }
-    .pupil { width: 12px; height: 12px; background-color: #1A202C; border-radius: 50%; position: absolute; transition: transform 0.1s ease-out; }
-    .eyelid { position: absolute; top: 0; left: 0; width: 100%; height: 0%; background-color: #A0AEC0; transition: height 0.2s ease-in-out; z-index: 2; }
     </style>
     """, unsafe_allow_html=True)
-
-    st.markdown("""
-    <div class="robot-container">
-        <div class="robot-face">
-            <div class="eye">
-                <div class="pupil pupil-left"></div>
-                <div class="eyelid eyelid-left"></div>
-            </div>
-            <div class="eye">
-                <div class="pupil pupil-right"></div>
-                <div class="eyelid eyelid-right"></div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    components.html("""
-    <script>
-    document.addEventListener("DOMContentLoaded", function() {
-        const parentDoc = window.parent.document;
-        function attachInteractions() {
-            const pupils = parentDoc.querySelectorAll('.pupil');
-            const eyelids = parentDoc.querySelectorAll('.eyelid');
-            const inputs = parentDoc.querySelectorAll('input');
-            if (inputs.length < 2 || pupils.length === 0) { setTimeout(attachInteractions, 300); return; }
-            const passwordInput = inputs[1];
-            parentDoc.addEventListener('mousemove', (e) => {
-                if (parentDoc.activeElement === passwordInput) return; 
-                pupils.forEach(pupil => {
-                    const rect = pupil.getBoundingClientRect();
-                    const x = Math.max(-6, Math.min(6, (e.clientX - rect.left) / 30));
-                    const y = Math.max(-6, Math.min(6, (e.clientY - rect.top) / 30));
-                    pupil.style.transform = `translate(${x}px, ${y}px)`;
-                });
-            });
-            passwordInput.addEventListener('focus', () => {
-                eyelids.forEach(el => el.style.height = '100%');
-                pupils.forEach(pupil => pupil.style.transform = `translate(0px, 0px)`);
-            });
-            passwordInput.addEventListener('blur', () => { eyelids.forEach(el => el.style.height = '0%'); });
-        }
-        attachInteractions();
-    });
-    </script>
-    """, height=0, width=0)
 
     col1, col2, col3 = st.columns([1, 1.2, 1])
     
@@ -650,9 +603,7 @@ if not st.session_state['logged_in']:
                     st.session_state['role'] = user[2]
                     st.session_state['branch_id'] = user[3]
                     st.session_state['status'] = user[4]
-                    
                     cookie_manager.set("wp_user_id", str(user[0]), key="set_u")
-                    
                     st.rerun()
                 else:
                     st.error("Invalid Credentials.")
@@ -931,19 +882,19 @@ else:
                 with col_map:
                     st.write("### 📍 Step 1: Get GPS Location")
                     
-                    # --- 🔴 PURE HTML/JS REPLACEMENT ---
+                    # --- 🔴 PURE HTML/JS REPLACEMENT WITH BYPASS ---
                     worker_lat, worker_lon = get_url_coords()
                     
                     if worker_lat and worker_lon:
                         st.success("✅ GPS Coordinates Locked! You may now press Check In.")
-                        if st.button("🔄 Re-Scan Location (If incorrect)", type="secondary"):
+                        if st.button("🔄 Re-Scan Location", type="secondary"):
                             try: st.query_params.clear()
                             except: pass
                             st.rerun()
                     else:
-                        st.warning("👇 **TAP THE BLUE BUTTON BELOW TO SCAN GPS** 👇")
-                        components.html(NATIVE_GPS_SCRIPT, height=70)
-                    # -----------------------------------
+                        # This injects the un-blockable iframe button
+                        st.markdown(NATIVE_GPS_IFRAME, unsafe_allow_html=True)
+                    # -----------------------------------------------
                     
                     st.write("### 📍 Step 2: Verify on Map & Check In")
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=18)
@@ -1104,8 +1055,7 @@ else:
                             except: pass
                             st.rerun()
                     else:
-                        st.warning("👇 **TAP THE BLUE BUTTON BELOW TO SCAN GPS** 👇")
-                        components.html(NATIVE_GPS_SCRIPT, height=70)
+                        st.markdown(NATIVE_GPS_IFRAME, unsafe_allow_html=True)
                     # -----------------------------------------------
                     
                     if st.button("📦 Log Delivery at Current Location", use_container_width=True):
