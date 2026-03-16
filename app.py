@@ -80,7 +80,7 @@ div[data-testid="InputInstructions"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- STRICT GEOFENCING FUNCTION ---
+# --- STRICT GEOFENCING FUNCTION (FIXED FOR DECIMALS) ---
 def calculate_distance(lat1, lon1, lat2, lon2):
     if None in [lat1, lon1, lat2, lon2] or 0.0 in [lat1, lon1, lat2, lon2]:
         return float('inf') 
@@ -932,7 +932,8 @@ else:
                     st.write("### 📍 Step 2: Verify on Map & Check In")
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=19)
                     
-                    folium.Circle(location=[b_lat, b_lon], radius=10, color="blue", fill=True, fill_opacity=0.2).add_to(m)
+                    # 🔴 RADIUS ADJUSTED TO 50 METERS 🔴
+                    folium.Circle(location=[b_lat, b_lon], radius=50, color="blue", fill=True, fill_opacity=0.2).add_to(m)
                     
                     folium.Marker([b_lat, b_lon], tooltip="Branch", icon=folium.Icon(color="green", icon="building", prefix='fa')).add_to(m)
                     if worker_lat and worker_lon:
@@ -958,7 +959,8 @@ else:
                             else:
                                 distance_to_branch = calculate_distance(b_lat, b_lon, worker_lat, worker_lon)
                                 
-                                if distance_to_branch <= 10:
+                                # 🔴 DISTANCE SECURITY LOCK ADJUSTED TO 50 METERS 🔴
+                                if distance_to_branch <= 50:
                                     log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                     st.cache_data.clear()
                                     try: st.query_params.clear()
@@ -966,7 +968,7 @@ else:
                                     st.success(f"Shift started! Verified on-site ({int(distance_to_branch)}m away).")
                                     st.rerun()
                                 else:
-                                    st.error(f"❌ Security Block: You are {int(distance_to_branch)} meters away from the branch. You must be within 10 meters to check in.")
+                                    st.error(f"❌ Security Block: You are {int(distance_to_branch)} meters away from the branch. You must be within 50 meters to check in.")
                             
             else:
                 st.info("You operate across all branches. Click below to start your shift.")
@@ -1097,7 +1099,10 @@ else:
                     if st.button("📦 Log Delivery at Current Location", use_container_width=True):
                         if d_lat and d_lon:
                             log_delivery(active_journey, d_lat, d_lon)
+                            
+                            # 🔴 GOOGLE MAPS LINK FIX 🔴
                             map_link = f"https://www.google.com/maps?q={d_lat},{d_lon}"
+                            
                             msg = f"📦 {st.session_state['name']} logged a delivery stop. [📍 View Location]({map_link})"
                             log_notification(None, 'General Manager', None, None, msg)
                             log_notification(None, 'CEO', None, None, msg)
@@ -1296,6 +1301,7 @@ else:
                             if row['On_Break'] == 1: return "🍱 On Lunch"
                             return "🟢 Working Active"
                         
+                        # 🔴 GOOGLE MAPS LINK FIX 🔴
                         def get_loc_link(row):
                             if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
                                 return f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}"
@@ -1542,6 +1548,7 @@ else:
                     if row['On_Break'] == 1: return "🍱 On Lunch"
                     return "🟢 Working Active"
                 
+                # 🔴 GOOGLE MAPS LINK FIX 🔴
                 def get_loc_link(row):
                     if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
                         return f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}"
