@@ -449,11 +449,7 @@ def render_inbox(my_role, my_branch, my_id):
 # =========================================================
 # 🔴 COOKIE MANAGER & SESSION STATE LOGIC
 # =========================================================
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
+cookie_manager = stx.CookieManager()
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
