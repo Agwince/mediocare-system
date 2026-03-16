@@ -113,7 +113,6 @@ def get_attendance_record(user_id):
     return record
 
 def update_performance_status(user_id):
-    # VIOLATION FIX: Violations are now based on extending lunch breaks > 60 mins
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT break_seconds FROM attendance WHERE user_id=%s", (user_id,))
@@ -130,7 +129,6 @@ def update_performance_status(user_id):
     return status
 
 def log_attendance(user_id, lat, lon):
-    # ALL CHECK-INS AUTO APPROVED
     conn = get_connection()
     cursor = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -174,7 +172,7 @@ def end_break(user_id, break_start_time_str):
     cursor.execute("UPDATE attendance SET on_break=0, break_seconds = break_seconds + %s, break_start_time=NULL WHERE user_id=%s AND date=%s", (elapsed_seconds, user_id, date_today))
     conn.commit()
     conn.close()
-    update_performance_status(user_id) # Check for violation on break end
+    update_performance_status(user_id) 
 
 def get_branch_coordinates(branch_id):
     if not branch_id: return None
@@ -329,7 +327,6 @@ def update_user_branch(user_id, new_branch_id):
     conn.close()
 
 def delete_user(user_id):
-    # ADMIN DELETE USER BUG FIX (Clears linked history first)
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM attendance WHERE user_id=%s", (user_id,))
@@ -440,7 +437,6 @@ def render_inbox(my_role, my_branch, my_id):
             for _, row in my_meetings.iterrows():
                 st.warning(f"🗣️ **{row['Title']}** with {row['Organizer_Name']} | 🗓️ {row['Date']} at {row['Time']}\n\n_{row['Description']}_")
 
-
 # =========================================================
 # 🔴 COOKIE MANAGER & SESSION STATE LOGIC
 # =========================================================
@@ -451,10 +447,8 @@ if 'logged_in' not in st.session_state:
 if 'logout_clicked' not in st.session_state:
     st.session_state['logout_clicked'] = False
 
-# Auto-Login from Cookies if the page refreshes
 cookie_uid = cookie_manager.get(cookie="wp_user_id")
 
-# KILL SWITCH
 if cookie_uid and not st.session_state['logged_in'] and not st.session_state['logout_clicked']:
     st.session_state['logged_in'] = True
     st.session_state['user_id'] = int(cookie_uid)
@@ -462,7 +456,6 @@ if cookie_uid and not st.session_state['logged_in'] and not st.session_state['lo
     st.session_state['role'] = cookie_manager.get(cookie="wp_role")
     b_id = cookie_manager.get(cookie="wp_branch_id")
     st.session_state['branch_id'] = int(b_id) if b_id and b_id != 'None' else None
-
 
 # =========================================================
 # THE LOGIN SYSTEM
@@ -586,7 +579,6 @@ if not st.session_state['logged_in']:
                     else:
                         st.error("Please enter your name and phone number.")
 
-
 # =========================================================
 # MAIN APP DASHBOARDS (Logged In)
 # =========================================================
@@ -610,7 +602,6 @@ else:
     if st.session_state['role'] != 'System Admin':
         with st.sidebar.expander("✉️ Direct Message & Files"):
             st.caption("Send a private message or file to anyone.")
-            # BM VISION FIX: Branch managers only see their branch
             if st.session_state['role'] == 'Branch Manager':
                 users_df = get_df("SELECT user_id AS \"User_ID\", full_name AS \"Full_Name\", role AS \"Role\" FROM users WHERE user_id != %s AND branch_id = %s", (st.session_state['user_id'], st.session_state['branch_id']))
             else:
@@ -640,7 +631,7 @@ else:
                             supabase.storage.from_("uploads").upload(safe_name, file_bytes)
                             file_path = safe_name
                         except Exception as e:
-                            st.error(f"Upload failed! Did you create the 'uploads' bucket in Supabase? Error: {e}")
+                            st.error(f"Upload failed! Error: {e}")
                             st.stop()
                     
                     msg_content = dm_msg.strip() if dm_msg.strip() else "📎 Sent an attached file."
@@ -648,14 +639,24 @@ else:
                     st.success(f"Sent to {selected_user.split(' (')[0]}!")
         st.sidebar.write("---")
 
-    # 🔴 LOGOUT FIX
+    # 🔴 BULLETPROOF LOGOUT FIX
     if st.sidebar.button("Logout", type="secondary"):
         st.session_state['logout_clicked'] = True
         st.session_state['logged_in'] = False
-        cookie_manager.delete("wp_user_id", key="del_u")
-        cookie_manager.delete("wp_name", key="del_n")
-        cookie_manager.delete("wp_role", key="del_r")
-        cookie_manager.delete("wp_branch_id", key="del_b")
+        
+        try:
+            cookie_manager.delete("wp_user_id", key="del_u")
+        except: pass
+        try:
+            cookie_manager.delete("wp_name", key="del_n")
+        except: pass
+        try:
+            cookie_manager.delete("wp_role", key="del_r")
+        except: pass
+        try:
+            cookie_manager.delete("wp_branch_id", key="del_b")
+        except: pass
+        
         time.sleep(1)
         st.rerun()
 
@@ -835,7 +836,6 @@ else:
                         folium.Marker([worker_lat, worker_lon], tooltip="You", icon=folium.Icon(color="red", icon="user", prefix='fa')).add_to(m)
                     st_folium(m, width=700, height=400)
                     
-                    # AUTO APPROVE CHECK-IN FIX
                     if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
                         if st.session_state['role'] in ['Marketer', 'Driver']:
                             if worker_lat and worker_lon:
@@ -919,7 +919,6 @@ else:
                     st.progress(progress)
                     st.caption(f"**Active Time Worked:** {hours} Hours, {minutes} Minutes")
                 with col2:
-                    # LUNCH BREAK FIX: Only show if they haven't taken one yet
                     if break_seconds == 0:
                         if st.button("🍱 Take 1h Lunch Break", use_container_width=True):
                             start_break(st.session_state['user_id'])
@@ -1028,7 +1027,6 @@ else:
                             st.caption("No pending checkouts.")
 
                         st.write("---")
-                        # SUBMISSION FIX: Hide forms if already submitted
                         today_str = datetime.now().strftime("%Y-%m-%d")
                         sales_check = get_df("SELECT COUNT(*) FROM daily_sales WHERE branch_id=%s AND date=%s", (st.session_state['branch_id'], today_str))
                         if sales_check.iloc[0,0] == 0:
@@ -1092,7 +1090,6 @@ else:
                         
                 with tab4:
                     st.write("### 📞 Employee Contact Directory")
-                    # BM VISION FIX
                     dir_df = get_directory_df(st.session_state['branch_id'])
                     if not dir_df.empty:
                         search_bm_dir = st.text_input("🔍 Search Directory...", key="bm_dir_search")
