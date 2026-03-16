@@ -33,6 +33,19 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 def get_connection():
     return psycopg2.connect(DB_URL)
 
+# --- SILENT DATABASE MIGRATION FOR SHIFT HOURS ---
+def ensure_db_updates():
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_hours NUMERIC DEFAULT 8.0;")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+ensure_db_updates()
+
 @st.cache_data(ttl=15, show_spinner=False)
 def get_df(query, params=None):
     conn = get_connection()
@@ -52,7 +65,6 @@ def get_url_coords():
         pass
     return None, None
 
-# This is on one massive line so Streamlit cannot break it
 NATIVE_GPS_IFRAME = """<iframe srcdoc="<html><head><style>body{margin:0;padding:0;font-family:sans-serif;}button{background-color:#1484A6;color:white;padding:12px 20px;border:none;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%;box-shadow:0px 4px 6px rgba(0,0,0,0.1);transition:0.3s;}button:active{background-color:#0e607a;}</style></head><body><button id='btn' onclick='getLoc()'>📍 TAP HERE TO GET GPS LOCATION</button><script>function getLoc(){var btn = document.getElementById('btn');btn.innerText = '⏳ Locating... Please check for a pop-up...';btn.style.backgroundColor = '#E2E8F0';btn.style.color = '#1A202C';if(navigator.geolocation){navigator.geolocation.getCurrentPosition(function(pos){var lat = pos.coords.latitude;var lon = pos.coords.longitude;var currentUrl = window.parent.location.href.split('?')[0];window.parent.location.href = currentUrl + '?lat=' + lat + '&lon=' + lon;},function(err){alert('GPS Error: You must tap ALLOW when the browser asks for your location.');btn.innerText = '📍 TAP HERE TO GET GPS LOCATION';btn.style.backgroundColor = '#1484A6';btn.style.color = 'white';},{enableHighAccuracy:true, timeout:10000, maximumAge:0});}else{alert('Geolocation not supported.');}}</script></body></html>" width="100%" height="70px" style="border:none;" allow="geolocation"></iframe>"""
 
 # =========================================================
@@ -73,7 +85,6 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     if None in [lat1, lon1, lat2, lon2] or 0.0 in [lat1, lon1, lat2, lon2]:
         return float('inf') 
     
-    # THE FIX: Force everything into a standard float so Python math doesn't crash
     lat1, lon1, lat2, lon2 = float(lat1), float(lon1), float(lat2), float(lon2)
     
     R = 6371000 
@@ -234,6 +245,18 @@ def get_branch_name(branch_id):
     conn.close()
     return res[0] if res else "Unknown"
 
+def get_branch_shift_hours(branch_id):
+    if not branch_id: return 8.0
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT shift_hours FROM branches WHERE branch_id=%s", (branch_id,))
+        res = cursor.fetchone()
+        conn.close()
+        return float(res[0]) if res and res[0] else 8.0
+    except Exception:
+        return 8.0
+
 def get_active_journey(driver_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -339,10 +362,14 @@ def get_monthly_attendance_ranking():
         att_rank_df['Attendance Rate'] = (att_rank_df['Days_Worked'] / days_in_month_so_far * 100).apply(lambda x: f"{x:.1f}%")
     return att_rank_df
 
-def add_branch(name, lat, lon):
+def add_branch(name, lat, lon, shift_hours=8.0):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO branches (branch_name, latitude, longitude) VALUES (%s, %s, %s)", (name, lat, lon))
+    try:
+        cursor.execute("INSERT INTO branches (branch_name, latitude, longitude, shift_hours) VALUES (%s, %s, %s, %s)", (name, lat, lon, shift_hours))
+    except Exception:
+        conn.rollback()
+        cursor.execute("INSERT INTO branches (branch_name, latitude, longitude) VALUES (%s, %s, %s)", (name, lat, lon))
     conn.commit()
     conn.close()
 
@@ -393,7 +420,11 @@ def delete_user(user_id):
     conn.close()
 
 def get_all_branches_df():
-    return get_df("SELECT branch_id AS \"Branch_ID\", branch_name AS \"Branch_Name\", latitude AS \"Latitude\", longitude AS \"Longitude\" FROM branches")
+    # Will pull shift_hours if it exists, otherwise defaults to 8
+    try:
+        return get_df("SELECT branch_id AS \"Branch_ID\", branch_name AS \"Branch_Name\", latitude AS \"Latitude\", longitude AS \"Longitude\", COALESCE(shift_hours, 8.0) AS \"Shift_Hours\" FROM branches")
+    except Exception:
+        return get_df("SELECT branch_id AS \"Branch_ID\", branch_name AS \"Branch_Name\", latitude AS \"Latitude\", longitude AS \"Longitude\" FROM branches")
 
 def get_all_users_df():
     return get_df("SELECT u.user_id AS \"User_ID\", u.full_name AS \"Full_Name\", u.role AS \"Role\", u.phone_number AS \"Phone_Number\", COALESCE(b.branch_name, 'None') AS \"Branch\" FROM users u LEFT JOIN branches b ON u.branch_id = b.branch_id")
@@ -701,9 +732,11 @@ else:
                 new_b_name = st.text_input("Branch Name (e.g., Kisumu Hub)")
                 new_b_lat = st.number_input("GPS Latitude (e.g., -0.0917)", format="%.6f")
                 new_b_lon = st.number_input("GPS Longitude (e.g., 34.7680)", format="%.6f")
+                new_b_shift = st.number_input("Shift Duration (Hours)", min_value=1.0, max_value=24.0, value=8.0, step=0.5)
+                
                 if st.form_submit_button("Register Branch"):
                     if new_b_name:
-                        add_branch(new_b_name, new_b_lat, new_b_lon)
+                        add_branch(new_b_name, new_b_lat, new_b_lon, new_b_shift)
                         st.cache_data.clear()
                         st.success(f"Branch '{new_b_name}' successfully added to the database.")
                         st.rerun()
@@ -715,20 +748,49 @@ else:
             branches_df = get_all_branches_df()
             
             if not branches_df.empty:
-                delete_branch_options = {"-- Select Branch --": None}
-                for _, row in branches_df.iterrows():
-                    delete_branch_options[row['Branch_Name']] = row['Branch_ID']
-                    
-                selected_del_branch = st.selectbox("Select Branch to Delete", list(delete_branch_options.keys()))
+                col_b1, col_b2 = st.columns(2)
                 
-                if selected_del_branch != "-- Select Branch --":
-                    st.warning(f"⚠️ Warning: Deleting {selected_del_branch} will reassign its workers to Corporate and delete its sales history.")
-                    if st.button("🗑️ Delete Branch", type="primary"):
-                        delete_branch(delete_branch_options[selected_del_branch])
-                        st.cache_data.clear()
-                        st.success(f"{selected_del_branch} deleted successfully!")
-                        time.sleep(1)
-                        st.rerun()
+                with col_b1:
+                    st.write("**Update Shift Duration**")
+                    edit_branch_options = {"-- Select Branch --": None}
+                    for _, row in branches_df.iterrows():
+                        edit_branch_options[row['Branch_Name']] = row['Branch_ID']
+                        
+                    selected_edit_branch = st.selectbox("Select Branch to Edit", list(edit_branch_options.keys()))
+                    if selected_edit_branch != "-- Select Branch --":
+                        b_id = edit_branch_options[selected_edit_branch]
+                        current_hours = get_branch_shift_hours(b_id)
+                        new_hours = st.number_input("New Shift Duration (Hours)", min_value=1.0, max_value=24.0, value=float(current_hours), step=0.5)
+                        if st.button("Update Shift Time", type="primary"):
+                            conn = get_connection()
+                            try:
+                                conn.cursor().execute("UPDATE branches SET shift_hours=%s WHERE branch_id=%s", (new_hours, b_id))
+                                conn.commit()
+                            except Exception:
+                                pass
+                            finally:
+                                conn.close()
+                            st.cache_data.clear()
+                            st.success(f"Updated {selected_edit_branch} shift to {new_hours} hours.")
+                            time.sleep(1)
+                            st.rerun()
+
+                with col_b2:
+                    st.write("**Remove Branch**")
+                    delete_branch_options = {"-- Select Branch --": None}
+                    for _, row in branches_df.iterrows():
+                        delete_branch_options[row['Branch_Name']] = row['Branch_ID']
+                        
+                    selected_del_branch = st.selectbox("Select Branch to Delete", list(delete_branch_options.keys()))
+                    
+                    if selected_del_branch != "-- Select Branch --":
+                        st.warning(f"⚠️ Deleting {selected_del_branch} reassigns workers to Corporate and drops sales data.")
+                        if st.button("🗑️ Delete Branch", type="primary"):
+                            delete_branch(delete_branch_options[selected_del_branch])
+                            st.cache_data.clear()
+                            st.success(f"{selected_del_branch} deleted successfully!")
+                            time.sleep(1)
+                            st.rerun()
                         
                 st.write("---")
                 st.dataframe(branches_df, hide_index=True, use_container_width=True)
@@ -855,10 +917,10 @@ else:
                         st.markdown(NATIVE_GPS_IFRAME, unsafe_allow_html=True)
                     
                     st.write("### 📍 Step 2: Verify on Map & Check In")
-                    m = folium.Map(location=[b_lat, b_lon], zoom_start=18)
+                    m = folium.Map(location=[b_lat, b_lon], zoom_start=19)
                     
-                    # --- 🔴 CHANGED TO 50 METERS ---
-                    folium.Circle(location=[b_lat, b_lon], radius=50, color="blue", fill=True, fill_opacity=0.2).add_to(m)
+                    # 🔴 RADIUS REDUCED TO 10 METERS 🔴
+                    folium.Circle(location=[b_lat, b_lon], radius=10, color="blue", fill=True, fill_opacity=0.2).add_to(m)
                     
                     folium.Marker([b_lat, b_lon], tooltip="Branch", icon=folium.Icon(color="green", icon="building", prefix='fa')).add_to(m)
                     if worker_lat and worker_lon:
@@ -884,8 +946,8 @@ else:
                             else:
                                 distance_to_branch = calculate_distance(b_lat, b_lon, worker_lat, worker_lon)
                                 
-                                # --- 🔴 CHANGED TO 50 METERS ---
-                                if distance_to_branch <= 50:
+                                # 🔴 DISTANCE SECURITY LOCK REDUCED TO 10 METERS 🔴
+                                if distance_to_branch <= 10:
                                     log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                     st.cache_data.clear()
                                     try: st.query_params.clear()
@@ -893,8 +955,7 @@ else:
                                     st.success(f"Shift started! Verified on-site ({int(distance_to_branch)}m away).")
                                     st.rerun()
                                 else:
-                                    # --- 🔴 CHANGED TO 50 METERS ---
-                                    st.error(f"❌ Security Block: You are {int(distance_to_branch)} meters away from the branch. You must be within 50 meters to check in.")
+                                    st.error(f"❌ Security Block: You are {int(distance_to_branch)} meters away from the branch. You must be within 10 meters to check in.")
                             
             else:
                 st.info("You operate across all branches. Click below to start your shift.")
@@ -955,9 +1016,13 @@ else:
                 
                 col1, col2 = st.columns([4, 1])
                 with col1:
-                    progress = min(worked_seconds / 28800.0, 1.0)
+                    # 🔴 DYNAMIC SHIFT PROGRESS BAR 🔴
+                    branch_shift_hours = get_branch_shift_hours(st.session_state.get('branch_id'))
+                    shift_target_seconds = branch_shift_hours * 3600
+                    
+                    progress = min(worked_seconds / shift_target_seconds, 1.0)
                     st.progress(progress)
-                    st.caption(f"**Active Time Worked:** {hours} Hours, {minutes} Minutes")
+                    st.caption(f"**Active Time Worked:** {hours} Hours, {minutes} Minutes (Shift Goal: {branch_shift_hours} Hours)")
                 with col2:
                     if break_seconds < 3600:
                         btn_label = "🍱 Take 1h Lunch Break" if break_seconds == 0 else f"🍱 Resume Break ({int((3600 - break_seconds)//60)}m left)"
