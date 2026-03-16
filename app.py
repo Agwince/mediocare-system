@@ -641,17 +641,25 @@ else:
                     log_notification(st.session_state['user_id'], None, None, target_id, msg_content, file_path, file_name)
                     st.success(f"Sent to {selected_user.split(' (')[0]}!")
         st.sidebar.write("---")
-
-    # 🔴 LOGOUT & CLEAR COOKIES
+        
+   # 🔴 LOGOUT & CLEAR COOKIES FIX
     if st.sidebar.button("Logout", type="secondary"):
-        st.session_state['logged_in'] = False
+        # 1. Tell the browser to delete the cookies
         cookie_manager.delete("wp_user_id", key="del_u")
         cookie_manager.delete("wp_name", key="del_n")
         cookie_manager.delete("wp_role", key="del_r")
         cookie_manager.delete("wp_branch_id", key="del_b")
-        st.cache_data.clear()
+        
+        # 2. Wipe the Streamlit memory
+        st.session_state.clear()
+        st.session_state['logged_in'] = False
+        
+        # 3. PAUSE for 1 second to give the phone time to delete the cookies
+        import time
+        time.sleep(1)
+        
+        # 4. Now restart the app safely
         st.rerun()
-
     # =========================================================
     # THE PAYWALL LOGIC 
     # =========================================================
