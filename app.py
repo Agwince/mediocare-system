@@ -80,7 +80,7 @@ div[data-testid="InputInstructions"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- STRICT GEOFENCING FUNCTION (FIXED FOR DECIMALS) ---
+# --- STRICT GEOFENCING FUNCTION ---
 def calculate_distance(lat1, lon1, lat2, lon2):
     if None in [lat1, lon1, lat2, lon2] or 0.0 in [lat1, lon1, lat2, lon2]:
         return float('inf') 
@@ -932,6 +932,7 @@ else:
                     st.write("### 📍 Step 2: Verify on Map & Check In")
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=19)
                     
+                    # 🔴 RESTORED TO 50 METERS 🔴
                     folium.Circle(location=[b_lat, b_lon], radius=50, color="blue", fill=True, fill_opacity=0.2).add_to(m)
                     
                     folium.Marker([b_lat, b_lon], tooltip="Branch", icon=folium.Icon(color="green", icon="building", prefix='fa')).add_to(m)
@@ -958,6 +959,7 @@ else:
                             else:
                                 distance_to_branch = calculate_distance(b_lat, b_lon, worker_lat, worker_lon)
                                 
+                                # 🔴 RESTORED TO 50 METERS 🔴
                                 if distance_to_branch <= 50:
                                     log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                     st.cache_data.clear()
@@ -1098,8 +1100,8 @@ else:
                         if d_lat and d_lon:
                             log_delivery(active_journey, d_lat, d_lon)
                             
-                            # 🔴 GOOGLE MAPS LINK FIX FOR DRIVER 🔴
-                            map_link = f"https://www.google.com/maps?q={d_lat},{d_lon}"
+                            # 🔴 TRUE GOOGLE MAPS LINK FIX FOR DRIVERS 🔴
+                            map_link = f"https://www.google.com/maps/search/?api=1&query={d_lat},{d_lon}"
                             
                             msg = f"📦 {st.session_state['name']} logged a delivery stop. [📍 View Location]({map_link})"
                             log_notification(None, 'General Manager', None, None, msg)
@@ -1299,10 +1301,10 @@ else:
                             if row['On_Break'] == 1: return "🍱 On Lunch"
                             return "🟢 Working Active"
                         
-                        # 🔴 GOOGLE MAPS LINK FIX FOR HR ROSTER 🔴
+                        # 🔴 TRUE GOOGLE MAPS LINK FIX FOR HR ROSTER 🔴
                         def get_loc_link(row):
                             if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
-                                return f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}"
+                                return f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}"
                             return None
 
                         all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
@@ -1546,10 +1548,10 @@ else:
                     if row['On_Break'] == 1: return "🍱 On Lunch"
                     return "🟢 Working Active"
                 
-                # 🔴 GOOGLE MAPS LINK FIX FOR CEO ROSTER 🔴
+                # 🔴 TRUE GOOGLE MAPS LINK FIX FOR CEO ROSTER 🔴
                 def get_loc_link(row):
                     if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
-                        return f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}"
+                        return f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}"
                     return None
 
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
