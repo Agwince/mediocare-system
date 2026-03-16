@@ -882,13 +882,24 @@ else:
                     
                     location = streamlit_geolocation()
                     
-                    worker_lat, worker_lon = None, None
+                    # --- 🔴 THE MEMORY FIX FOR GPS ---
+                    if 'worker_lat' not in st.session_state:
+                        st.session_state['worker_lat'] = None
+                    if 'worker_lon' not in st.session_state:
+                        st.session_state['worker_lon'] = None
+
                     if location and location.get('latitude') is not None:
-                        worker_lat = location['latitude']
-                        worker_lon = location['longitude']
+                        st.session_state['worker_lat'] = location['latitude']
+                        st.session_state['worker_lon'] = location['longitude']
+
+                    worker_lat = st.session_state['worker_lat']
+                    worker_lon = st.session_state['worker_lon']
+                    # ----------------------------------
+                    
+                    if worker_lat and worker_lon:
                         st.success("✅ GPS Coordinates Locked! You may now press Check In.")
                     else:
-                        st.info("Please allow location access if your browser asks.")
+                        st.info("Please allow location access if your browser asks. Click the button above.")
                     
                     st.write("### 📍 Step 2: Verify on Map & Check In")
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=18)
@@ -900,7 +911,7 @@ else:
                     
                     if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
                         if not worker_lat or not worker_lon:
-                            st.error("⚠️ GPS Error: Location access denied. Please click the crosshairs icon above the map, and tap 'Allow' when your phone asks for permission.")
+                            st.error("⚠️ GPS Error: Location missing. Please click the crosshairs icon above the map, and tap 'Allow'.")
                         else:
                             if st.session_state['role'] in ['Marketer', 'Driver']:
                                 log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
@@ -1037,10 +1048,21 @@ else:
                     st.warning("👇 **CLICK THE TARGET ICON BELOW** 👇")
                     location = streamlit_geolocation()
                     
-                    d_lat, d_lon = None, None
+                    # --- 🔴 THE MEMORY FIX FOR GPS ---
+                    if 'd_lat' not in st.session_state:
+                        st.session_state['d_lat'] = None
+                    if 'd_lon' not in st.session_state:
+                        st.session_state['d_lon'] = None
+
                     if location and location.get('latitude') is not None:
-                        d_lat = location['latitude']
-                        d_lon = location['longitude']
+                        st.session_state['d_lat'] = location['latitude']
+                        st.session_state['d_lon'] = location['longitude']
+
+                    d_lat = st.session_state['d_lat']
+                    d_lon = st.session_state['d_lon']
+                    # ----------------------------------
+                    
+                    if d_lat and d_lon:
                         st.success("✅ Delivery Location Locked!")
                     else:
                         st.info("Please allow location access if your browser asks.")
