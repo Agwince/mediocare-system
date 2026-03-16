@@ -10,6 +10,7 @@ import streamlit.components.v1 as components
 from supabase import create_client
 import os
 import extra_streamlit_components as stx
+import time
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
@@ -453,10 +454,14 @@ cookie_manager = stx.CookieManager()
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
+if 'logout_clicked' not in st.session_state:
+    st.session_state['logout_clicked'] = False
 
 # Auto-Login from Cookies if the page refreshes
 cookie_uid = cookie_manager.get(cookie="wp_user_id")
-if cookie_uid and not st.session_state['logged_in']:
+
+# KILL SWITCH: Only auto-login if the user hasn't clicked logout
+if cookie_uid and not st.session_state['logged_in'] and not st.session_state['logout_clicked']:
     st.session_state['logged_in'] = True
     st.session_state['user_id'] = int(cookie_uid)
     st.session_state['name'] = cookie_manager.get(cookie="wp_name")
@@ -558,6 +563,7 @@ if not st.session_state['logged_in']:
                 user = authenticate_user(phone, password)
                 if user:
                     st.session_state['logged_in'] = True
+                    st.session_state['logout_clicked'] = False # Reset kill switch on fresh login
                     st.session_state['user_id'] = user[0]
                     st.session_state['name'] = user[1]
                     st.session_state['role'] = user[2]
@@ -641,25 +647,25 @@ else:
                     log_notification(st.session_state['user_id'], None, None, target_id, msg_content, file_path, file_name)
                     st.success(f"Sent to {selected_user.split(' (')[0]}!")
         st.sidebar.write("---")
-        
-   # 🔴 LOGOUT & CLEAR COOKIES FIX
+
+    # 🔴 LOGOUT & CLEAR COOKIES FIX
     if st.sidebar.button("Logout", type="secondary"):
-        # 1. Tell the browser to delete the cookies
+        # 1. Activate the Kill Switch so it ignores old cookies
+        st.session_state['logout_clicked'] = True
+        st.session_state['logged_in'] = False
+        
+        # 2. Tell browser to delete cookies in the background
         cookie_manager.delete("wp_user_id", key="del_u")
         cookie_manager.delete("wp_name", key="del_n")
         cookie_manager.delete("wp_role", key="del_r")
         cookie_manager.delete("wp_branch_id", key="del_b")
         
-        # 2. Wipe the Streamlit memory
-        st.session_state.clear()
-        st.session_state['logged_in'] = False
-        
-        # 3. PAUSE for 1 second to give the phone time to delete the cookies
-        import time
+        # 3. Add a tiny pause just in case
         time.sleep(1)
         
-        # 4. Now restart the app safely
+        # 4. Safely return to the login screen
         st.rerun()
+
     # =========================================================
     # THE PAYWALL LOGIC 
     # =========================================================
