@@ -77,7 +77,6 @@ def authenticate_user(phone, password):
     conn.close()
     return user
 
-# 🔴 NEW: DATABASE FETCH TO PREVENT "NONE" ROLE BUG
 def get_user_by_id(user_id):
     try:
         conn = get_connection()
@@ -487,7 +486,6 @@ if 'logout_clicked' not in st.session_state:
 
 cookie_uid = cookie_manager.get(cookie="wp_user_id")
 
-# 🔴 FIX: WE NOW FETCH THE FRESH ROLE DIRECTLY FROM THE DB! NO MORE "NONE" ERRORS.
 if cookie_uid and not st.session_state['logged_in'] and not st.session_state['logout_clicked']:
     user_data = get_user_by_id(int(float(str(cookie_uid))))
     
@@ -879,7 +877,12 @@ else:
                 col_left, col_map, col_right = st.columns([1, 2, 1])
                 with col_map:
                     st.write("### 📍 Live Location Verification")
-                    location = streamlit_geolocation()
+                    
+                    # 🔴 STRICT PRODUCTION UI FOR TOMORROW
+                    st.info("📱 **Phone Users:** Ensure your GPS/Location is turned ON and allow browser permissions when prompted. Click the crosshairs button below to lock in your coordinates.")
+                    
+                    # Ensure component renders with a key for stability
+                    location = streamlit_geolocation(key="worker_loc")
                     worker_lat = location.get('latitude') if location else None
                     worker_lon = location.get('longitude') if location else None
                     
@@ -892,7 +895,7 @@ else:
                     
                     if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
                         if not worker_lat or not worker_lon:
-                            st.error("⚠️ GPS Error: Please click the crosshairs icon on the map to find your location first.")
+                            st.error("⚠️ GPS Error: Location access denied. Please click the crosshairs icon above the map, and tap 'Allow' when your phone asks for permission.")
                         else:
                             if st.session_state['role'] in ['Marketer', 'Driver']:
                                 log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
@@ -951,7 +954,7 @@ else:
                 current_break_elapsed = (now_dt - break_start_dt).total_seconds()
                 total_break_sec += current_break_elapsed
                 
-                break_remaining = (3600) - current_break_elapsed
+                break_remaining = (3600) - total_break_sec
                 if break_remaining > 0:
                     st.warning(f"🍱 **ON LUNCH BREAK:** {int(break_remaining // 60)} minutes {int(break_remaining % 60)} seconds remaining.")
                 else:
@@ -978,13 +981,14 @@ else:
                     st.progress(progress)
                     st.caption(f"**Active Time Worked:** {hours} Hours, {minutes} Minutes")
                 with col2:
-                    if break_seconds == 0:
-                        if st.button("🍱 Take 1h Lunch Break", use_container_width=True):
+                    if break_seconds < 3600:
+                        btn_label = "🍱 Take 1h Lunch Break" if break_seconds == 0 else f"🍱 Resume Break ({int((3600 - break_seconds)//60)}m left)"
+                        if st.button(btn_label, use_container_width=True):
                             start_break(st.session_state['user_id'])
                             st.cache_data.clear()
                             st.rerun()
                     else:
-                        st.caption("✅ Lunch break taken today.")
+                        st.caption("✅ 1h Lunch break fully used.")
 
         if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
             st.write("---")
