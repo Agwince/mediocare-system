@@ -856,7 +856,10 @@ else:
                     
                     st.write("### 📍 Step 2: Verify on Map & Check In")
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=18)
-                    folium.Circle(location=[b_lat, b_lon], radius=100, color="blue", fill=True, fill_opacity=0.2).add_to(m)
+                    
+                    # --- 🔴 CHANGED TO 50 METERS ---
+                    folium.Circle(location=[b_lat, b_lon], radius=50, color="blue", fill=True, fill_opacity=0.2).add_to(m)
+                    
                     folium.Marker([b_lat, b_lon], tooltip="Branch", icon=folium.Icon(color="green", icon="building", prefix='fa')).add_to(m)
                     if worker_lat and worker_lon:
                         folium.Marker([worker_lat, worker_lon], tooltip="You", icon=folium.Icon(color="red", icon="user", prefix='fa')).add_to(m)
@@ -881,7 +884,8 @@ else:
                             else:
                                 distance_to_branch = calculate_distance(b_lat, b_lon, worker_lat, worker_lon)
                                 
-                                if distance_to_branch <= 100:
+                                # --- 🔴 CHANGED TO 50 METERS ---
+                                if distance_to_branch <= 50:
                                     log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                     st.cache_data.clear()
                                     try: st.query_params.clear()
@@ -889,7 +893,8 @@ else:
                                     st.success(f"Shift started! Verified on-site ({int(distance_to_branch)}m away).")
                                     st.rerun()
                                 else:
-                                    st.error(f"❌ Security Block: You are {int(distance_to_branch)} meters away from the branch. You must be within 100 meters to check in.")
+                                    # --- 🔴 CHANGED TO 50 METERS ---
+                                    st.error(f"❌ Security Block: You are {int(distance_to_branch)} meters away from the branch. You must be within 50 meters to check in.")
                             
             else:
                 st.info("You operate across all branches. Click below to start your shift.")
