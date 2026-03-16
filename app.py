@@ -876,7 +876,6 @@ else:
                 b_lat, b_lon = branch_coords
                 col_left, col_map, col_right = st.columns([1, 2, 1])
                 with col_map:
-                    # 🔴 FLawless Native Mobile GPS System
                     st.write("### 📍 Live Location Verification")
                     st.info("📱 **Phone Users:** Tap the button below to turn on your GPS. Make sure location permissions are allowed.")
                     
@@ -889,25 +888,39 @@ else:
                             worker_lon = float(query_params.get("lon"))
                         except: pass
 
+                    # 🔴 FLAWLESS 2-TAP GPS FIX
                     if not worker_lat or not worker_lon:
                         components.html("""
                         <div style="display: flex; justify-content: center; flex-direction: column; align-items: center; padding: 10px;">
-                            <button onclick="getLocation()" style="background-color: #1484A6; color: white; padding: 15px 30px; border: none; border-radius: 8px; font-size: 18px; font-weight: bold; cursor: pointer; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 350px;">
+                            <button id="gpsBtn" onclick="getLocation()" style="background-color: #1484A6; color: white; padding: 15px 30px; border: none; border-radius: 8px; font-size: 18px; font-weight: bold; cursor: pointer; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 350px;">
                                 📍 TAP TO GET LOCATION
                             </button>
                             <p id="status" style="font-family: sans-serif; color: #EF4444; font-weight: bold; margin-top: 15px; text-align: center;"></p>
                         </div>
                         <script>
+                        let fetchedLat = null;
+                        let fetchedLon = null;
+
                         function getLocation() {
+                            const btn = document.getElementById("gpsBtn");
                             const status = document.getElementById("status");
+
+                            if (fetchedLat && fetchedLon) {
+                                status.innerText = "🔄 Syncing with server...";
+                                window.parent.location.href = window.parent.location.pathname + "?lat=" + fetchedLat + "&lon=" + fetchedLon;
+                                return;
+                            }
+
                             status.innerText = "⏳ Requesting GPS... Please click 'Allow' if prompted.";
                             if (navigator.geolocation) {
                                 navigator.geolocation.getCurrentPosition(
                                     function(position) {
-                                        const lat = position.coords.latitude;
-                                        const lon = position.coords.longitude;
-                                        status.innerText = "✅ Location found! Locking in...";
-                                        window.parent.location.href = window.parent.location.pathname + "?lat=" + lat + "&lon=" + lon;
+                                        fetchedLat = position.coords.latitude;
+                                        fetchedLon = position.coords.longitude;
+                                        status.innerText = "✅ Location found!";
+                                        status.style.color = "#10B981"; 
+                                        btn.innerText = "🚀 CLICK TO CONFIRM CHECK-IN";
+                                        btn.style.backgroundColor = "#10B981";
                                     },
                                     function(error) {
                                         status.innerText = "❌ GPS Error: You must allow location access in your phone settings to check in.";
@@ -1070,7 +1083,6 @@ else:
                 else:
                     st.success(f"🟢 Journey Active (ID: {active_journey})")
                     
-                    # 🔴 NATIVE GPS FOR DRIVER DELIVERY
                     query_params = st.query_params
                     d_lat = None
                     d_lon = None
@@ -1083,17 +1095,34 @@ else:
                     if not d_lat or not d_lon:
                         components.html("""
                         <div style="display: flex; justify-content: center; flex-direction: column; align-items: center; padding: 10px;">
-                            <button onclick="getDelLoc()" style="background-color: #1484A6; color: white; padding: 10px 20px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; max-width: 350px;">
+                            <button id="delBtn" onclick="getDelLoc()" style="background-color: #1484A6; color: white; padding: 10px 20px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; max-width: 350px;">
                                 📍 PINPOINT DELIVERY LOCATION
                             </button>
                             <p id="d_status" style="font-family: sans-serif; color: #EF4444; font-weight: bold; margin-top: 10px; text-align: center;"></p>
                         </div>
                         <script>
+                        let dLat = null;
+                        let dLon = null;
+
                         function getDelLoc() {
-                            document.getElementById("d_status").innerText = "⏳ Finding GPS...";
+                            const btn = document.getElementById("delBtn");
+                            const status = document.getElementById("d_status");
+
+                            if (dLat && dLon) {
+                                status.innerText = "🔄 Syncing with server...";
+                                window.parent.location.href = window.parent.location.pathname + "?d_lat=" + dLat + "&d_lon=" + dLon;
+                                return;
+                            }
+
+                            status.innerText = "⏳ Finding GPS...";
                             navigator.geolocation.getCurrentPosition(
                                 function(pos) {
-                                    window.parent.location.href = window.parent.location.pathname + "?d_lat=" + pos.coords.latitude + "&d_lon=" + pos.coords.longitude;
+                                    dLat = pos.coords.latitude;
+                                    dLon = pos.coords.longitude;
+                                    status.innerText = "✅ Location found!";
+                                    status.style.color = "#10B981";
+                                    btn.innerText = "🚀 CLICK TO CONFIRM LOCATION";
+                                    btn.style.backgroundColor = "#10B981";
                                 },
                                 function(err) {
                                     document.getElementById("d_status").innerText = "❌ GPS Error. Enable location in phone settings.";
@@ -1102,7 +1131,7 @@ else:
                             );
                         }
                         </script>
-                        """, height=100)
+                        """, height=180)
                     else:
                         st.success("✅ Delivery Location Locked!")
                         if st.button("🔄 Retake Location", use_container_width=True):
