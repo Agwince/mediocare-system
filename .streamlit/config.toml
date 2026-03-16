@@ -12,3 +12,5 @@ secondaryBackgroundColor = "#FFFFFF"
 textColor = "#2D3748"
 
 font = "sans serif"
+[server]
+enableCORS = false
