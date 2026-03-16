@@ -113,11 +113,12 @@ def get_attendance_record(user_id):
     return record
 
 def update_performance_status(user_id):
+    # VIOLATION FIX: Violations are now based on extending lunch breaks > 60 mins
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT check_in_time FROM attendance WHERE user_id=%s", (user_id,))
+    cursor.execute("SELECT break_seconds FROM attendance WHERE user_id=%s", (user_id,))
     records = cursor.fetchall()
-    violations = sum(1 for r in records if r[0].split(" ")[1] > "08:30:00")
+    violations = sum(1 for r in records if r[0] and int(r[0]) > 3600)
             
     if violations == 0: status = '🟢 Green'
     elif violations <= 2: status = '🟡 Yellow'
@@ -128,30 +129,16 @@ def update_performance_status(user_id):
     conn.close()
     return status
 
-def approve_checkin(record_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE attendance SET checkin_status='Approved' WHERE record_id=%s", (record_id,))
-    cursor.execute("SELECT user_id FROM attendance WHERE record_id=%s", (record_id,))
-    user_id = cursor.fetchone()[0]
-    conn.commit()
-    conn.close()
-    status = update_performance_status(user_id)
-    if status != '🟢 Green':
-        log_notification(None, 'CEO', None, None, f"⚠️ Attendance Violation: User {user_id} dropped to {status} status.")
-
-def log_attendance(user_id, lat, lon, checkin_status='Approved'):
+def log_attendance(user_id, lat, lon):
+    # ALL CHECK-INS AUTO APPROVED
     conn = get_connection()
     cursor = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date_today = datetime.now().strftime("%Y-%m-%d")
-    cursor.execute("INSERT INTO attendance (user_id, date, check_in_time, check_in_lat, check_in_lon, checkin_status) VALUES (%s, %s, %s, %s, %s, %s)", (user_id, date_today, now, lat, lon, checkin_status))
+    cursor.execute("INSERT INTO attendance (user_id, date, check_in_time, check_in_lat, check_in_lon, checkin_status) VALUES (%s, %s, %s, %s, %s, %s)", (user_id, date_today, now, lat, lon, 'Approved'))
     conn.commit()
     conn.close()
-    if checkin_status == 'Approved':
-        status = update_performance_status(user_id) 
-        if status != '🟢 Green':
-            log_notification(None, 'CEO', None, None, f"⚠️ Attendance Violation: User {user_id} dropped to {status} status.")
+    update_performance_status(user_id) 
 
 def request_check_out(user_id, role):
     conn = get_connection()
@@ -164,7 +151,7 @@ def request_check_out(user_id, role):
         status = 'Approved'
     else:
         status = 'Pending Manager'
-    cursor.execute("UPDATE attendance SET check_out_time=%s, checkout_status=%s WHERE user_id=%s AND date=%s", (now, status, user_id, date_today))
+    cursor.execute("UPDATE attendance SET checkout_status=%s WHERE user_id=%s AND date=%s", (status, user_id, date_today))
     conn.commit()
     conn.close()
 
@@ -187,6 +174,7 @@ def end_break(user_id, break_start_time_str):
     cursor.execute("UPDATE attendance SET on_break=0, break_seconds = break_seconds + %s, break_start_time=NULL WHERE user_id=%s AND date=%s", (elapsed_seconds, user_id, date_today))
     conn.commit()
     conn.close()
+    update_performance_status(user_id) # Check for violation on break end
 
 def get_branch_coordinates(branch_id):
     if not branch_id: return None
@@ -341,8 +329,14 @@ def update_user_branch(user_id, new_branch_id):
     conn.close()
 
 def delete_user(user_id):
+    # ADMIN DELETE USER BUG FIX (Clears linked history first)
     conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM attendance WHERE user_id=%s", (user_id,))
+    cursor.execute("DELETE FROM leave_requests WHERE user_id=%s", (user_id,))
+    cursor.execute("DELETE FROM billing WHERE user_id=%s", (user_id,))
+    cursor.execute("DELETE FROM driver_journeys WHERE driver_id=%s", (user_id,))
+    cursor.execute("DELETE FROM notifications WHERE sender_id=%s OR target_user_id=%s", (user_id, user_id))
     cursor.execute("DELETE FROM users WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
@@ -460,19 +454,18 @@ if 'logout_clicked' not in st.session_state:
 # Auto-Login from Cookies if the page refreshes
 cookie_uid = cookie_manager.get(cookie="wp_user_id")
 
-# KILL SWITCH: Only auto-login if the user hasn't clicked logout
+# KILL SWITCH
 if cookie_uid and not st.session_state['logged_in'] and not st.session_state['logout_clicked']:
     st.session_state['logged_in'] = True
     st.session_state['user_id'] = int(cookie_uid)
     st.session_state['name'] = cookie_manager.get(cookie="wp_name")
     st.session_state['role'] = cookie_manager.get(cookie="wp_role")
-    
     b_id = cookie_manager.get(cookie="wp_branch_id")
     st.session_state['branch_id'] = int(b_id) if b_id and b_id != 'None' else None
 
 
 # =========================================================
-# THE "MOVING EYES" LOGIN WITH ADMIN SIGN-UP SYSTEM
+# THE LOGIN SYSTEM
 # =========================================================
 if not st.session_state['logged_in']:
     
@@ -563,14 +556,13 @@ if not st.session_state['logged_in']:
                 user = authenticate_user(phone, password)
                 if user:
                     st.session_state['logged_in'] = True
-                    st.session_state['logout_clicked'] = False # Reset kill switch on fresh login
+                    st.session_state['logout_clicked'] = False
                     st.session_state['user_id'] = user[0]
                     st.session_state['name'] = user[1]
                     st.session_state['role'] = user[2]
                     st.session_state['branch_id'] = user[3]
                     st.session_state['status'] = user[4]
                     
-                    # 🔴 SAVE LOGIN TO COOKIES
                     cookie_manager.set("wp_user_id", str(user[0]), key="set_u")
                     cookie_manager.set("wp_name", str(user[1]), key="set_n")
                     cookie_manager.set("wp_role", str(user[2]), key="set_r")
@@ -617,8 +609,12 @@ else:
 
     if st.session_state['role'] != 'System Admin':
         with st.sidebar.expander("✉️ Direct Message & Files"):
-            st.caption("Send a private message or file to anyone in the company.")
-            users_df = get_df("SELECT user_id AS \"User_ID\", full_name AS \"Full_Name\", role AS \"Role\" FROM users WHERE user_id != %s", (st.session_state['user_id'],))
+            st.caption("Send a private message or file to anyone.")
+            # BM VISION FIX: Branch managers only see their branch
+            if st.session_state['role'] == 'Branch Manager':
+                users_df = get_df("SELECT user_id AS \"User_ID\", full_name AS \"Full_Name\", role AS \"Role\" FROM users WHERE user_id != %s AND branch_id = %s", (st.session_state['user_id'], st.session_state['branch_id']))
+            else:
+                users_df = get_df("SELECT user_id AS \"User_ID\", full_name AS \"Full_Name\", role AS \"Role\" FROM users WHERE user_id != %s", (st.session_state['user_id'],))
             
             user_options = {"Select Recipient...": None}
             for _, row in users_df.iterrows():
@@ -637,33 +633,30 @@ else:
                 else:
                     file_path, file_name = None, None
                     if uploaded_file:
-                        file_name = uploaded_file.name
-                        safe_name = f"{datetime.now().strftime('%H%M%S')}_{file_name}"
-                        file_bytes = uploaded_file.getvalue()
-                        supabase.storage.from_("uploads").upload(safe_name, file_bytes)
-                        file_path = safe_name
+                        try:
+                            file_name = uploaded_file.name
+                            safe_name = f"{datetime.now().strftime('%H%M%S')}_{file_name}"
+                            file_bytes = uploaded_file.getvalue()
+                            supabase.storage.from_("uploads").upload(safe_name, file_bytes)
+                            file_path = safe_name
+                        except Exception as e:
+                            st.error(f"Upload failed! Did you create the 'uploads' bucket in Supabase? Error: {e}")
+                            st.stop()
                     
                     msg_content = dm_msg.strip() if dm_msg.strip() else "📎 Sent an attached file."
                     log_notification(st.session_state['user_id'], None, None, target_id, msg_content, file_path, file_name)
                     st.success(f"Sent to {selected_user.split(' (')[0]}!")
         st.sidebar.write("---")
 
-    # 🔴 LOGOUT & CLEAR COOKIES FIX
+    # 🔴 LOGOUT FIX
     if st.sidebar.button("Logout", type="secondary"):
-        # 1. Activate the Kill Switch so it ignores old cookies
         st.session_state['logout_clicked'] = True
         st.session_state['logged_in'] = False
-        
-        # 2. Tell browser to delete cookies in the background
         cookie_manager.delete("wp_user_id", key="del_u")
         cookie_manager.delete("wp_name", key="del_n")
         cookie_manager.delete("wp_role", key="del_r")
         cookie_manager.delete("wp_branch_id", key="del_b")
-        
-        # 3. Add a tiny pause just in case
         time.sleep(1)
-        
-        # 4. Safely return to the login screen
         st.rerun()
 
     # =========================================================
@@ -682,6 +675,20 @@ else:
             st.stop() 
         else:
             st.sidebar.success(f"Sub Active until: {valid_until_date}")
+
+    # =========================================================
+    # UNIVERSAL LEAVE REQUEST
+    # =========================================================
+    if st.session_state['role'] not in ['CEO', 'System Admin']:
+        with st.sidebar.expander("🏖️ Request Time Off"):
+            with st.form("leave_form"):
+                start_date = st.date_input("Start Date", min_value=dt.date.today())
+                end_date = st.date_input("End Date", min_value=start_date)
+                reason = st.text_area("Reason for Leave")
+                if st.form_submit_button("Submit Request"):
+                    submit_leave_request(st.session_state['user_id'], start_date, end_date, reason)
+                    st.cache_data.clear()
+                    st.success("Request sent to HR!")
 
     # =========================================================
     # SYSTEM ADMIN DASHBOARD
@@ -781,7 +788,6 @@ else:
 
         with tab3:
             st.write("### 🔔 Account Access Requests")
-            st.caption("Review new requests below. Once you create their account in the 'Manage Users' tab, click 'Mark as Handled' here.")
             
             admin_notifs = get_df("SELECT notif_id AS \"Notif_ID\", message AS \"Message\", created_at AS \"Created_At\" FROM notifications WHERE target_role='System Admin' AND is_read=0 ORDER BY created_at DESC")
             
@@ -829,30 +835,23 @@ else:
                         folium.Marker([worker_lat, worker_lon], tooltip="You", icon=folium.Icon(color="red", icon="user", prefix='fa')).add_to(m)
                     st_folium(m, width=700, height=400)
                     
+                    # AUTO APPROVE CHECK-IN FIX
                     if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
                         if st.session_state['role'] in ['Marketer', 'Driver']:
                             if worker_lat and worker_lon:
-                                log_attendance(st.session_state['user_id'], worker_lat, worker_lon, checkin_status='Pending GM')
-                                log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} ({st.session_state['role']}) is requesting check-in approval.")
+                                log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
+                                if st.session_state['role'] == 'Driver':
+                                    log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
+                                    log_notification(None, 'CEO', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
+                                else:
+                                    log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) checked in from the field.")
                                 st.cache_data.clear()
-                                st.success("Location recorded. Waiting for GM approval.")
+                                st.success("Location recorded. Shift started!")
                                 st.rerun()
                             else:
                                 st.error(f"{st.session_state['role']}s MUST click the GPS icon to record their location before checking in!")
-                        
-                        elif st.session_state['role'] == 'Worker':
-                            success, message = True, "Developer Override Active"
-                            if success:
-                                log_attendance(st.session_state['user_id'], worker_lat or 0.0, worker_lon or 0.0, checkin_status='Pending Manager')
-                                log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🟢 {st.session_state['name']} (Worker) is requesting check-in approval.")
-                                st.cache_data.clear()
-                                st.success("Check-in requested. Waiting for Branch Manager approval.")
-                                st.rerun()
-                            else:
-                                st.error(message)
-                        
                         else:
-                            log_attendance(st.session_state['user_id'], worker_lat or 0.0, worker_lon or 0.0, checkin_status='Approved')
+                            log_attendance(st.session_state['user_id'], worker_lat or 0.0, worker_lon or 0.0)
                             st.cache_data.clear()
                             st.success("Shift started!")
                             st.rerun()
@@ -860,7 +859,7 @@ else:
             else:
                 st.info("You operate across all branches. Click below to start your shift.")
                 if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
-                    log_attendance(st.session_state['user_id'], 0.0, 0.0, checkin_status='Approved')
+                    log_attendance(st.session_state['user_id'], 0.0, 0.0)
                     st.cache_data.clear()
                     st.rerun()
             
@@ -868,14 +867,6 @@ else:
                 st.write("---")
                 render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
             st.stop() 
-
-        # 1.5 PENDING CHECK-IN APPROVAL
-        elif checkin_status in ['Pending GM', 'Pending Manager']:
-            st.warning("⏳ Waiting for your supervisor to approve your check-in. Please hold on.")
-            if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
-                st.write("---")
-                render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
-            st.stop()
 
         is_working = True
 
@@ -928,10 +919,14 @@ else:
                     st.progress(progress)
                     st.caption(f"**Active Time Worked:** {hours} Hours, {minutes} Minutes")
                 with col2:
-                    if st.button("🍱 Take 1h Lunch Break", use_container_width=True):
-                        start_break(st.session_state['user_id'])
-                        st.cache_data.clear()
-                        st.rerun()
+                    # LUNCH BREAK FIX: Only show if they haven't taken one yet
+                    if break_seconds == 0:
+                        if st.button("🍱 Take 1h Lunch Break", use_container_width=True):
+                            start_break(st.session_state['user_id'])
+                            st.cache_data.clear()
+                            st.rerun()
+                    else:
+                        st.caption("✅ Lunch break taken today.")
 
         if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
             st.write("---")
@@ -942,19 +937,7 @@ else:
         # =========================================================
         if is_working or st.session_state['role'] in ['Branch Manager', 'General Manager', 'HR']:
             
-            if st.session_state['role'] == "Worker":
-                st.write("### Request Time Off")
-                with st.form("leave_form"):
-                    start_date = st.date_input("Start Date", min_value=dt.date.today())
-                    end_date = st.date_input("End Date", min_value=start_date)
-                    reason = st.text_area("Reason for Leave")
-                    submitted = st.form_submit_button("Submit Request to HR")
-                    if submitted:
-                        submit_leave_request(st.session_state['user_id'], start_date, end_date, reason)
-                        st.cache_data.clear()
-                        st.success("Request sent to HR for approval.")
-                        
-            elif st.session_state['role'] == "Marketer" and is_working:
+            if st.session_state['role'] == "Marketer" and is_working:
                 st.write("### 💸 Log Daily Field Expenses")
                 st.caption("Submit your travel, meal, or operational expenses for today.")
                 with st.form("marketer_expense_form"):
@@ -977,7 +960,7 @@ else:
                     if st.button("🚀 Start Journey", use_container_width=True, type="primary"):
                         start_journey(st.session_state['user_id'])
                         log_notification(None, 'General Manager', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
-                        log_notification(None, 'HR', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
+                        log_notification(None, 'CEO', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
                         st.cache_data.clear()
                         st.rerun()
                 else:
@@ -992,7 +975,6 @@ else:
                             map_link = f"https://www.google.com/maps?q={d_lat},{d_lon}"
                             msg = f"📦 {st.session_state['name']} logged a delivery stop. [📍 View Location]({map_link})"
                             log_notification(None, 'General Manager', None, None, msg)
-                            log_notification(None, 'HR', None, None, msg)
                             log_notification(None, 'CEO', None, None, msg)
                             st.success("Delivery logged!")
                         else:
@@ -1000,7 +982,7 @@ else:
                     if st.button("🏁 Return to Branch & End Journey", use_container_width=True, type="secondary"):
                         end_journey(active_journey)
                         log_notification(None, 'General Manager', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
-                        log_notification(None, 'HR', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
+                        log_notification(None, 'CEO', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
                         st.cache_data.clear()
                         st.rerun()
 
@@ -1011,29 +993,13 @@ else:
                     col1, col2 = st.columns([2, 1])
                     with col1:
                         st.write("### Today's Attendance")
-                        query = "SELECT u.full_name AS \"Name\", u.phone_number AS \"Phone\", a.check_in_time AS \"Check_In\", a.on_break AS \"On_Break\", u.performance_status AS \"Status\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND u.role != 'Driver'"
-                        df = get_df(query, (st.session_state['branch_id'],))
+                        query = "SELECT u.full_name AS \"Name\", u.phone_number AS \"Phone\", a.check_in_time AS \"Check_In\", a.on_break AS \"On_Break\", u.performance_status AS \"Status\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND u.role != 'Driver' AND a.date = %s"
+                        df = get_df(query, (st.session_state['branch_id'], datetime.now().strftime("%Y-%m-%d")))
                         if not df.empty:
                             df['On_Break'] = df['On_Break'].apply(lambda x: '🍱 On Lunch' if x == 1 else '⚙️ Working')
                             st.dataframe(df, use_container_width=True, hide_index=True)
                         else:
                             st.info("No workers have checked in today.")
-                            
-                        st.write("---")
-                        st.write("### 📍 Pending Check-Ins")
-                        pending_in_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_in_time AS \"Check_In_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND a.checkin_status = 'Pending Manager' AND u.role = 'Worker'"
-                        pending_in_df = get_df(pending_in_query, (st.session_state['branch_id'],))
-                        
-                        if not pending_in_df.empty:
-                            for _, row in pending_in_df.iterrows():
-                                col_p1, col_p2 = st.columns([3, 1])
-                                col_p1.warning(f"**{row['Name']}** requested check-in at {row['Check_In_Time']}")
-                                if col_p2.button("Approve In", key=f"bm_app_in_{row['Record_ID']}", type="primary"):
-                                    approve_checkin(row['Record_ID'])
-                                    st.cache_data.clear()
-                                    st.rerun()
-                        else:
-                            st.caption("No pending check-ins.")
                             
                         st.write("---")
                         st.write("### 🛑 Pending Checkouts")
@@ -1042,7 +1008,7 @@ else:
                         
                         if not pending_out_df.empty:
                             for _, row in pending_out_df.iterrows():
-                                col_p1, col_p2 = st.columns([3, 1])
+                                col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
                                 col_p1.warning(f"**{row['Name']}** requested checkout at {row['Check_Out_Time']}")
                                 if col_p2.button("Approve", key=f"app_co_{row['Record_ID']}", type="primary"):
                                     conn = get_connection()
@@ -1051,30 +1017,38 @@ else:
                                     conn.close()
                                     st.cache_data.clear()
                                     st.rerun()
+                                if col_p3.button("Deny", key=f"den_co_{row['Record_ID']}"):
+                                    conn = get_connection()
+                                    conn.cursor().execute("UPDATE attendance SET checkout_status='Active', check_out_time=NULL WHERE record_id=%s", (row['Record_ID'],))
+                                    conn.commit()
+                                    conn.close()
+                                    st.cache_data.clear()
+                                    st.rerun()
                         else:
                             st.caption("No pending checkouts.")
 
                         st.write("---")
-                        st.write("### 📈 End of Day Sales")
-                        daily_sales = st.number_input("Enter Total Daily Sales (KES)", min_value=0, step=1000)
-                        if st.button("Submit Sales Report", type="primary"):
-                            log_daily_sales(st.session_state['branch_id'], daily_sales)
-                            log_notification(None, 'General Manager', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
-                            log_notification(None, 'CEO', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
-                            st.cache_data.clear()
-                            st.success(f"KES {daily_sales} reported successfully.")
+                        # SUBMISSION FIX: Hide forms if already submitted
+                        today_str = datetime.now().strftime("%Y-%m-%d")
+                        sales_check = get_df("SELECT COUNT(*) FROM daily_sales WHERE branch_id=%s AND date=%s", (st.session_state['branch_id'], today_str))
+                        if sales_check.iloc[0,0] == 0:
+                            st.write("### 📈 End of Day Sales & Expenses")
+                            daily_sales = st.number_input("Enter Total Daily Sales (KES)", min_value=0, step=1000)
+                            exp_desc = st.text_input("Expense Description (e.g., Supplies, Fuel)")
+                            exp_amount = st.number_input("Expense Amount (KES)", min_value=0, step=500)
                             
-                        st.write("---")
-                        st.write("### 💸 Log Branch Expense")
-                        exp_desc = st.text_input("Expense Description (e.g., Office Supplies, Fuel)")
-                        exp_amount = st.number_input("Expense Amount (KES)", min_value=0, step=500)
-                        if st.button("Submit Expense", type="secondary"):
-                            if exp_desc.strip() != "":
-                                log_expense(st.session_state['branch_id'], exp_amount, exp_desc)
+                            if st.button("Submit Daily Financials", type="primary"):
+                                log_daily_sales(st.session_state['branch_id'], daily_sales)
+                                log_notification(None, 'General Manager', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
+                                log_notification(None, 'CEO', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
+                                
+                                if exp_desc.strip() != "":
+                                    log_expense(st.session_state['branch_id'], exp_amount, exp_desc)
                                 st.cache_data.clear()
-                                st.success("Expense logged securely.")
-                            else:
-                                st.error("Please enter a description.")
+                                st.success("Financials submitted successfully.")
+                                st.rerun()
+                        else:
+                            st.success("✅ End of Day financials have already been submitted for today.")
 
                     with col2:
                         st.write("### 🔔 Branch Operations & Alerts")
@@ -1118,7 +1092,7 @@ else:
                         
                 with tab4:
                     st.write("### 📞 Employee Contact Directory")
-                    st.caption("Click 'Call Now' to dial directly from your phone.")
+                    # BM VISION FIX
                     dir_df = get_directory_df(st.session_state['branch_id'])
                     if not dir_df.empty:
                         search_bm_dir = st.text_input("🔍 Search Directory...", key="bm_dir_search")
@@ -1153,40 +1127,6 @@ else:
                         st.info("No pending requests.")
                         
                 with tab2:
-                    pending_in_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_in_time AS \"Check_In_Time\", a.check_in_lat AS \"Check_In_Lat\", a.check_in_lon AS \"Check_In_Lon\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE a.checkin_status = 'Pending GM'"
-                    pending_in_df = get_df(pending_in_query)
-                    
-                    if not pending_in_df.empty:
-                        st.write("### 📍 Pending Check-Ins (Drivers & Marketers)")
-                        for _, row in pending_in_df.iterrows():
-                            col_f1, col_f2, col_f3 = st.columns([3, 1, 1])
-                            col_f1.warning(f"**{row['Name']}** checking in at {row['Check_In_Time']}")
-                            map_link = f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}"
-                            col_f2.markdown(f"[📍 View Location]({map_link})")
-                            if col_f3.button("Approve In", key=f"hr_app_in_{row['Record_ID']}", type="primary"):
-                                approve_checkin(row['Record_ID'])
-                                log_notification(None, 'Worker', None, None, f"✅ HR approved your field check-in.")
-                                st.cache_data.clear()
-                                st.rerun()
-                        st.write("---")
-                        
-                    pending_out_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_out_time AS \"Check_Out_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE a.checkout_status = 'Pending GM'"
-                    pending_out_df = get_df(pending_out_query)
-                    
-                    if not pending_out_df.empty:
-                        st.write("### 🛑 Pending Check-Outs (Drivers & Marketers)")
-                        for _, row in pending_out_df.iterrows():
-                            col_o1, col_o2 = st.columns([3, 1])
-                            col_o1.warning(f"**{row['Name']}** requested checkout at {row['Check_Out_Time']}")
-                            if col_o2.button("Approve Out", key=f"hr_app_out_{row['Record_ID']}", type="primary"):
-                                conn = get_connection()
-                                conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
-                                conn.commit()
-                                conn.close()
-                                st.cache_data.clear()
-                                st.rerun()
-                        st.write("---")
-
                     st.write("### Live Workforce Roster")
                     date_today = datetime.now().strftime("%Y-%m-%d")
                     all_users_query = f'''
@@ -1269,37 +1209,24 @@ else:
                     st.write("### 🌍 Field Marketer & Driver Approvals")
                     st.caption("Review live GPS check-ins and approve field checkouts.")
                     
-                    pending_in_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_in_time AS \"Check_In_Time\", a.check_in_lat AS \"Check_In_Lat\", a.check_in_lon AS \"Check_In_Lon\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE a.checkin_status = 'Pending GM'"
-                    pending_in_df = get_df(pending_in_query)
-                    
-                    if not pending_in_df.empty:
-                        st.write("#### 📍 Pending Check-Ins")
-                        for _, row in pending_in_df.iterrows():
-                            col_f1, col_f2, col_f3 = st.columns([3, 1, 1])
-                            col_f1.warning(f"**{row['Name']}** checking in at {row['Check_In_Time']}")
-                            map_link = f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}"
-                            col_f2.markdown(f"[📍 View Location]({map_link})")
-                            if col_f3.button("Approve In", key=f"gm_app_in_{row['Record_ID']}", type="primary"):
-                                approve_checkin(row['Record_ID'])
-                                log_notification(None, 'Worker', None, None, f"✅ GM approved your field check-in.")
-                                st.cache_data.clear()
-                                st.rerun()
-                    else:
-                        st.caption("No pending field check-ins.")
-                        
-                    st.write("---")
-                    
                     pending_out_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_out_time AS \"Check_Out_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE a.checkout_status = 'Pending GM'"
                     pending_out_df = get_df(pending_out_query)
                     
                     if not pending_out_df.empty:
                         st.write("#### 🛑 Pending Check-Outs")
                         for _, row in pending_out_df.iterrows():
-                            col_o1, col_o2 = st.columns([3, 1])
+                            col_o1, col_o2, col_o3 = st.columns([3, 1, 1])
                             col_o1.warning(f"**{row['Name']}** requested checkout at {row['Check_Out_Time']}")
                             if col_o2.button("Approve Out", key=f"gm_app_out_{row['Record_ID']}", type="primary"):
                                 conn = get_connection()
                                 conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
+                                conn.commit()
+                                conn.close()
+                                st.cache_data.clear()
+                                st.rerun()
+                            if col_o3.button("Deny", key=f"gm_den_{row['Record_ID']}"):
+                                conn = get_connection()
+                                conn.cursor().execute("UPDATE attendance SET checkout_status='Active', check_out_time=NULL WHERE record_id=%s", (row['Record_ID'],))
                                 conn.commit()
                                 conn.close()
                                 st.cache_data.clear()
@@ -1367,21 +1294,18 @@ else:
                 with col_c2:
                     st.write("### End Your Shift")
                     if st.button("🛑 REQUEST CHECKOUT", use_container_width=True, type="secondary"):
-                        success, message = True, "Developer Override Active"
-                        if success:
-                            request_check_out(st.session_state['user_id'], st.session_state['role'])
+                        request_check_out(st.session_state['user_id'], st.session_state['role'])
                             
-                            if st.session_state['role'] == 'Driver':
-                                log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                                log_notification(None, 'HR', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                            elif st.session_state['role'] == 'Worker':
-                                log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
+                        if st.session_state['role'] == 'Driver':
+                            log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                            log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                        elif st.session_state['role'] == 'Worker':
+                            log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
                                 
-                            st.cache_data.clear()
-                            st.success("Checkout requested!")
-                            st.rerun()
-                        else:
-                            st.error("You must be at the branch to check out!")
+                        st.cache_data.clear()
+                        st.success("Checkout requested!")
+                        st.rerun()
+
 
     # =========================================================
     # CEO DASHBOARD 
