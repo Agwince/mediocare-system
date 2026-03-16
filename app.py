@@ -9,17 +9,16 @@ from streamlit_geolocation import streamlit_geolocation
 import streamlit.components.v1 as components
 from supabase import create_client
 import os
+import extra_streamlit_components as stx
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
 
 # --- SECURE CLOUD CONNECTION ---
-# 1. First, try to pull keys from Render Environment Variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 DB_URL = os.environ.get("DB_URL")
 
-# 2. If it can't find them (like when testing locally), use Streamlit Secrets
 if not SUPABASE_URL or not DB_URL:
     try:
         SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -29,16 +28,13 @@ if not SUPABASE_URL or not DB_URL:
         st.error("⚠️ Connection Keys not found! Please check your Render Environment Variables.")
         st.stop()
 
-# Connect to Supabase
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_connection():
     return psycopg2.connect(DB_URL)
 
-# 🔴 SPEED UPGRADE: Cache the database queries so they load instantly!
 @st.cache_data(ttl=15, show_spinner=False)
 def get_df(query, params=None):
-    """Helper function to cleanly fetch DataFrames from Postgres with 15-second memory"""
     conn = get_connection()
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
@@ -449,12 +445,33 @@ def render_inbox(my_role, my_branch, my_id):
             for _, row in my_meetings.iterrows():
                 st.warning(f"🗣️ **{row['Title']}** with {row['Organizer_Name']} | 🗓️ {row['Date']} at {row['Time']}\n\n_{row['Description']}_")
 
-# --- Session State Setup ---
+
+# =========================================================
+# 🔴 COOKIE MANAGER & SESSION STATE LOGIC
+# =========================================================
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_cookie_manager()
+
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
+# Auto-Login from Cookies if the page refreshes
+cookie_uid = cookie_manager.get(cookie="wp_user_id")
+if cookie_uid and not st.session_state['logged_in']:
+    st.session_state['logged_in'] = True
+    st.session_state['user_id'] = int(cookie_uid)
+    st.session_state['name'] = cookie_manager.get(cookie="wp_name")
+    st.session_state['role'] = cookie_manager.get(cookie="wp_role")
+    
+    b_id = cookie_manager.get(cookie="wp_branch_id")
+    st.session_state['branch_id'] = int(b_id) if b_id and b_id != 'None' else None
+
+
 # =========================================================
-# 🔴 THE "MOVING EYES" LOGIN WITH ADMIN SIGN-UP SYSTEM
+# THE "MOVING EYES" LOGIN WITH ADMIN SIGN-UP SYSTEM
 # =========================================================
 if not st.session_state['logged_in']:
     
@@ -550,6 +567,13 @@ if not st.session_state['logged_in']:
                     st.session_state['role'] = user[2]
                     st.session_state['branch_id'] = user[3]
                     st.session_state['status'] = user[4]
+                    
+                    # 🔴 SAVE LOGIN TO COOKIES
+                    cookie_manager.set("wp_user_id", str(user[0]), key="set_u")
+                    cookie_manager.set("wp_name", str(user[1]), key="set_n")
+                    cookie_manager.set("wp_role", str(user[2]), key="set_r")
+                    cookie_manager.set("wp_branch_id", str(user[3]), key="set_b")
+                    
                     st.rerun()
                 else:
                     st.error("Invalid Credentials.")
@@ -622,8 +646,13 @@ else:
                     st.success(f"Sent to {selected_user.split(' (')[0]}!")
         st.sidebar.write("---")
 
+    # 🔴 LOGOUT & CLEAR COOKIES
     if st.sidebar.button("Logout", type="secondary"):
         st.session_state['logged_in'] = False
+        cookie_manager.delete("wp_user_id", key="del_u")
+        cookie_manager.delete("wp_name", key="del_n")
+        cookie_manager.delete("wp_role", key="del_r")
+        cookie_manager.delete("wp_branch_id", key="del_b")
         st.cache_data.clear()
         st.rerun()
 
