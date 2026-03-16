@@ -5,3 +5,4 @@ streamlit-folium
 streamlit-geolocation
 psycopg2-binary
 supabase
+extra-streamlit-components==0.1.71
