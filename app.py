@@ -881,8 +881,7 @@ else:
                     # 🔴 STRICT PRODUCTION UI FOR TOMORROW
                     st.info("📱 **Phone Users:** Ensure your GPS/Location is turned ON and allow browser permissions when prompted. Click the crosshairs button below to lock in your coordinates.")
                     
-                    # Ensure component renders with a key for stability
-                    location = streamlit_geolocation(key="worker_loc")
+                    location = streamlit_geolocation()
                     worker_lat = location.get('latitude') if location else None
                     worker_lon = location.get('longitude') if location else None
                     
