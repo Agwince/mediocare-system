@@ -80,7 +80,7 @@ div[data-testid="InputInstructions"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- STRICT GEOFENCING FUNCTION ---
+# --- STRICT GEOFENCING FUNCTION (FIXED FOR DECIMALS) ---
 def calculate_distance(lat1, lon1, lat2, lon2):
     if None in [lat1, lon1, lat2, lon2] or 0.0 in [lat1, lon1, lat2, lon2]:
         return float('inf') 
