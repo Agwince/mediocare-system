@@ -375,6 +375,22 @@ def add_branch(name, lat, lon, shift_hours=8.0):
     conn.commit()
     conn.close()
 
+# 🔴 NEW FUNCTION: Full Branch Update 🔴
+def update_branch_full(branch_id, name, lat, lon, shift_hours):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE branches SET branch_name=%s, latitude=%s, longitude=%s, shift_hours=%s WHERE branch_id=%s", (name, lat, lon, shift_hours, branch_id))
+        conn.commit()
+        success = True
+        msg = f"Branch '{name}' updated successfully!"
+    except Exception as e:
+        success = False
+        msg = f"Error: Could not update branch."
+    finally:
+        conn.close()
+    return success, msg
+
 def delete_branch(branch_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -674,7 +690,7 @@ if not st.session_state['logged_in']:
                 st.caption("Submit your details. The System Admin will configure your official account.")
                 req_name = st.text_input("Your Full Name")
                 req_phone = st.text_input("Your Phone Number")
-                req_role = st.selectbox("Requested Role", ["Worker", "Marketer", "Driver", "Branch Manager", "Operations Manager", "HR"])
+                req_role = st.selectbox("Requested Role", ["Worker", "Marketer", "Driver", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO"])
                 
                 if st.form_submit_button("Send Request to Admin", type="primary"):
                     if req_name.strip() and req_phone.strip():
@@ -806,53 +822,55 @@ else:
                         st.error("Branch Name is required.")
             
             st.write("---")
-            st.write("### Manage Existing Branches")
+            st.write("### 🛠️ Edit / Manage Existing Branches")
             branches_df = get_all_branches_df()
             
             if not branches_df.empty:
-                col_b1, col_b2 = st.columns(2)
-                
-                with col_b1:
-                    st.write("**Update Shift Duration**")
-                    edit_branch_options = {"-- Select Branch --": None}
-                    for _, row in branches_df.iterrows():
-                        edit_branch_options[row['Branch_Name']] = row['Branch_ID']
-                        
-                    selected_edit_branch = st.selectbox("Select Branch to Edit", list(edit_branch_options.keys()))
-                    if selected_edit_branch != "-- Select Branch --":
-                        b_id = edit_branch_options[selected_edit_branch]
-                        current_hours = get_branch_shift_hours(b_id)
-                        new_hours = st.number_input("New Shift Duration (Hours)", min_value=1.0, max_value=24.0, value=float(current_hours), step=0.5)
-                        if st.button("Update Shift Time", type="primary"):
-                            conn = get_connection()
-                            try:
-                                conn.cursor().execute("UPDATE branches SET shift_hours=%s WHERE branch_id=%s", (new_hours, b_id))
-                                conn.commit()
-                            except Exception:
-                                pass
-                            finally:
-                                conn.close()
-                            st.cache_data.clear()
-                            st.success(f"Updated {selected_edit_branch} shift to {new_hours} hours.")
-                            time.sleep(1)
-                            st.rerun()
-
-                with col_b2:
-                    st.write("**Remove Branch**")
-                    delete_branch_options = {"-- Select Branch --": None}
-                    for _, row in branches_df.iterrows():
-                        delete_branch_options[row['Branch_Name']] = row['Branch_ID']
-                        
-                    selected_del_branch = st.selectbox("Select Branch to Delete", list(delete_branch_options.keys()))
+                edit_branch_options = {"-- Select Branch --": None}
+                for _, row in branches_df.iterrows():
+                    edit_branch_options[row['Branch_Name']] = row['Branch_ID']
                     
-                    if selected_del_branch != "-- Select Branch --":
-                        st.warning(f"⚠️ Deleting {selected_del_branch} reassigns workers to Corporate and drops sales data.")
-                        if st.button("🗑️ Delete Branch", type="primary"):
-                            delete_branch(delete_branch_options[selected_del_branch])
-                            st.cache_data.clear()
-                            st.success(f"{selected_del_branch} deleted successfully!")
-                            time.sleep(1)
-                            st.rerun()
+                selected_edit_branch = st.selectbox("Select Branch to Edit or Delete", list(edit_branch_options.keys()))
+                
+                if selected_edit_branch != "-- Select Branch --":
+                    b_id = edit_branch_options[selected_edit_branch]
+                    
+                    branch_data = branches_df[branches_df['Branch_ID'] == b_id].iloc[0]
+                    current_name = branch_data['Branch_Name']
+                    current_lat = float(branch_data['Latitude']) if pd.notna(branch_data['Latitude']) else 0.0
+                    current_lon = float(branch_data['Longitude']) if pd.notna(branch_data['Longitude']) else 0.0
+                    current_shift = branch_data.get('Shift_Hours', 8.0)
+                    
+                    col_b1, col_b2 = st.columns(2)
+                    
+                    with col_b1:
+                        with st.form("edit_branch_form"):
+                            st.write("**Edit Branch Details**")
+                            e_b_name = st.text_input("Branch Name", value=current_name)
+                            e_b_lat = st.number_input("Latitude", value=current_lat, format="%.6f")
+                            e_b_lon = st.number_input("Longitude", value=current_lon, format="%.6f")
+                            e_b_shift = st.number_input("Shift Duration (Hours)", min_value=1.0, max_value=24.0, value=float(current_shift), step=0.5)
+                            
+                            if st.form_submit_button("💾 Save Changes", type="primary"):
+                                succ, msg = update_branch_full(b_id, e_b_name, e_b_lat, e_b_lon, e_b_shift)
+                                if succ:
+                                    st.cache_data.clear()
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+
+                    with col_b2:
+                        with st.form("delete_branch_form"):
+                            st.write("**Remove Branch**")
+                            st.caption("⚠️ Deleting reassigns workers to Corporate and drops sales data.")
+                            if st.form_submit_button("🗑️ Delete Branch", type="secondary"):
+                                delete_branch(b_id)
+                                st.cache_data.clear()
+                                st.success(f"{current_name} deleted successfully!")
+                                time.sleep(1)
+                                st.rerun()
                         
                 st.write("---")
                 st.dataframe(branches_df, hide_index=True, use_container_width=True)
