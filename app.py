@@ -10,7 +10,6 @@ import extra_streamlit_components as stx
 import time
 import math
 from supabase import create_client
-import streamlit.components.v1 as components
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
@@ -1565,7 +1564,7 @@ else:
         st.title("CEO Master Operations 📈")
         date_today = datetime.now().strftime("%Y-%m-%d")
         
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Data & Sales", "🚨 Live Status", "📅 History", "📢 Broadcast", "✅ Leaves", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["📊 Data & Sales", "🚨 Live Status", "📅 History", "📢 Broadcast", "✅ Leaves", "📞 Directory", f"🔔 Inbox ({my_notif_count})", "🤖 AI Advisor"])
         
         with tab1:
             st.write("### 🧠 AI System Report & Recommendations")
@@ -1754,3 +1753,34 @@ else:
                 
         with tab7:
             render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
+            
+        with tab8:
+            st.write("### 🤖 Executive AI Advisor")
+            st.caption("Your built-in strategic partner. Ask questions about business operations, sales, or workforce management.")
+            
+            if "ai_messages" not in st.session_state:
+                st.session_state.ai_messages = [{"role": "assistant", "content": "Welcome, CEO. I am your internal business advisor. To start, how are we looking to optimize WorkPulse operations today?"}]
+
+            for msg in st.session_state.ai_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            if prompt := st.chat_input("Ask the AI Advisor a question..."):
+                st.session_state.ai_messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                # Internal mock logic so you don't need API keys tonight
+                reply = "Based on current system data, maintaining a close eye on field marketer expenses against total daily sales is the most effective way to ensure high profit margins. Let me know if you need specific branch analysis."
+                prompt_lower = prompt.lower()
+                
+                if "sales" in prompt_lower:
+                    reply = "I recommend checking the 'Data & Sales' tab. Branches that fall behind in daily sales should be evaluated for staffing levels. Moving a field marketer to a struggling branch for a week usually yields a 15% ROI increase."
+                elif "attendance" in prompt_lower or "worker" in prompt_lower:
+                    reply = "Your workforce is being actively tracked via the 50-meter GPS geofence. To maximize productivity, ensure Branch Managers are scheduling weekly meetings to keep field staff aligned with corporate goals."
+                elif "expense" in prompt_lower or "money" in prompt_lower:
+                    reply = "Expenses are logged daily. I advise setting a strict policy that any expense over KES 5,000 requires direct GM approval before being submitted into the daily financials."
+
+                st.session_state.ai_messages.append({"role": "assistant", "content": reply})
+                with st.chat_message("assistant"):
+                    st.markdown(reply)
