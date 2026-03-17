@@ -10,6 +10,7 @@ import extra_streamlit_components as stx
 import time
 import math
 from supabase import create_client
+import streamlit.components.v1 as components
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
