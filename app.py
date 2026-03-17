@@ -10,6 +10,7 @@ import extra_streamlit_components as stx
 import time
 import math
 from supabase import create_client
+import streamlit.components.v1 as components
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="WorkPulse Platform", layout="wide")
@@ -116,6 +117,14 @@ def get_user_by_id(user_id):
     except Exception:
         return None
 
+def get_full_user_details(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT full_name, phone_number, password, role, branch_id FROM users WHERE user_id=%s", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res
+
 def log_notification(sender_id, target_role, target_branch_id, target_user_id, message, file_path=None, file_name=None):
     conn = get_connection()
     cursor = conn.cursor()
@@ -134,27 +143,6 @@ def log_meeting(branch_id, organizer, title, date_str, time_str, desc):
                    (branch_id, organizer, title, date_str, time_str, desc))
     conn.commit()
     conn.close()
-
-def check_subscription(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT valid_until FROM billing WHERE user_id=%s ORDER BY payment_date DESC LIMIT 1", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    if result and datetime.now().strftime("%Y-%m-%d") <= result[0]:
-        return True, result[0]
-    return False, None
-
-def process_payment(user_id, role, user_name):
-    amount = 100 if role in ['Worker', 'Driver', 'Marketer'] else 200
-    conn = get_connection()
-    cursor = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    valid_until = (datetime.now() + dt.timedelta(days=30)).strftime("%Y-%m-%d")
-    cursor.execute("INSERT INTO billing (user_id, amount, payment_date, valid_until) VALUES (%s, %s, %s, %s)", (user_id, amount, now, valid_until))
-    conn.commit()
-    conn.close()
-    log_notification(None, 'CEO', None, None, f"💳 M-Pesa Payment: {user_name} ({role}) paid KES {amount}.")
 
 def get_attendance_record(user_id):
     conn = get_connection()
@@ -198,7 +186,7 @@ def request_check_out(user_id, role):
     date_today = datetime.now().strftime("%Y-%m-%d")
     if role in ['Marketer', 'Driver']:
         status = 'Pending GM'
-    elif role in ['Branch Manager', 'General Manager', 'CEO', 'HR', 'System Admin']:
+    elif role in ['Branch Manager', 'General Manager', 'Operations Manager', 'CEO', 'HR', 'System Admin']:
         status = 'Approved'
     else:
         status = 'Pending Manager'
@@ -406,27 +394,34 @@ def add_user(name, phone, password, role, branch_id):
         cursor.execute("INSERT INTO users (full_name, phone_number, password, role, branch_id, performance_status) VALUES (%s, %s, %s, %s, %s, %s)", (name, phone, password, role, branch_id, '🟢 Green'))
         conn.commit()
         success = True
-        msg = f"User '{name}' added successfully."
+        msg = f"User '{name}' created successfully!"
     except psycopg2.IntegrityError:
         success = False
-        msg = "Error: Phone number already exists in the system."
+        msg = "⚠️ Error: That Phone Number is already registered to another account."
     finally:
         conn.close()
     return success, msg
 
-def update_user_branch(user_id, new_branch_id):
+def update_user_full(user_id, name, phone, password, role, branch_id):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET branch_id=%s WHERE user_id=%s", (new_branch_id, user_id))
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute("UPDATE users SET full_name=%s, phone_number=%s, password=%s, role=%s, branch_id=%s WHERE user_id=%s", (name, phone, password, role, branch_id, user_id))
+        conn.commit()
+        success = True
+        msg = f"User '{name}' updated successfully!"
+    except psycopg2.IntegrityError:
+        success = False
+        msg = "⚠️ Error: That Phone Number is already in use by someone else."
+    finally:
+        conn.close()
+    return success, msg
 
 def delete_user(user_id):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM attendance WHERE user_id=%s", (user_id,))
     cursor.execute("DELETE FROM leave_requests WHERE user_id=%s", (user_id,))
-    cursor.execute("DELETE FROM billing WHERE user_id=%s", (user_id,))
     cursor.execute("DELETE FROM driver_journeys WHERE driver_id=%s", (user_id,))
     cursor.execute("DELETE FROM notifications WHERE sender_id=%s OR target_user_id=%s", (user_id, user_id))
     cursor.execute("DELETE FROM users WHERE user_id=%s", (user_id,))
@@ -458,6 +453,28 @@ def get_unread_count(my_role, my_branch, my_id):
     conn.close()
     return count
 
+# --- CALLBACKS TO PREVENT TAB JUMPING ---
+def cb_mark_read(notif_id):
+    conn = get_connection()
+    conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE notif_id=%s", (notif_id,))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
+
+def cb_mark_all_read(my_id, my_role, my_branch):
+    conn = get_connection()
+    conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE (target_user_id=%s OR target_role=%s OR target_role='Entire Company' OR (target_role='My Branch' AND target_branch_id=%s)) AND is_read=0", (my_id, my_role, my_branch if my_branch else 0))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
+
+def cb_send_reply(r_id, s_id, key, my_id):
+    msg = st.session_state.get(key, "")
+    if msg:
+        log_notification(my_id, None, None, s_id, f"↪️ REPLY: {msg}")
+        cb_mark_read(r_id)
+        st.session_state[key] = ""
+
 def render_inbox(my_role, my_branch, my_id):
     query = """
         SELECT n.notif_id AS "Notif_ID", n.message AS "Message", n.created_at AS "Created_At", n.file_path AS "File_Path", n.file_name AS "File_Name", n.sender_id AS "Sender_ID", COALESCE(u.full_name, 'System') as "Sender_Name" 
@@ -470,7 +487,9 @@ def render_inbox(my_role, my_branch, my_id):
     st.write("### 📬 My Inbox & Alerts")
     
     if not unread_inbox.empty:
+        st.button("✅ Mark All as Read", on_click=cb_mark_all_read, args=(my_id, my_role, my_branch), type="primary")
         st.write(f"**You have {len(unread_inbox)} unread messages:**")
+        
         for _, row in unread_inbox.iterrows():
             with st.container():
                 st.warning(f"**From {row['Sender_Name']}** ({row['Created_At']})\n\n{row['Message']}")
@@ -483,26 +502,13 @@ def render_inbox(my_role, my_branch, my_id):
                         st.caption("⚠️ File missing or deleted from server.")
                 
                 col_b1, col_b2 = st.columns([1, 4])
-                if col_b1.button("Mark as Read", key=f"read_{row['Notif_ID']}"):
-                    conn = get_connection()
-                    conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE notif_id=%s", (row['Notif_ID'],))
-                    conn.commit()
-                    conn.close()
-                    st.cache_data.clear()
-                    st.rerun()
+                col_b1.button("Mark as Read", key=f"read_{row['Notif_ID']}", on_click=cb_mark_read, args=(row['Notif_ID'],))
                     
                 if pd.notna(row['Sender_ID']) and row['Sender_ID'] != 0:
                     with st.expander("Reply"):
-                        reply_msg = st.text_input("Type your reply...", key=f"rep_msg_{row['Notif_ID']}")
-                        if st.button("Send Reply", key=f"rep_btn_{row['Notif_ID']}"):
-                            log_notification(my_id, None, None, row['Sender_ID'], f"↪️ REPLY: {reply_msg}")
-                            conn = get_connection()
-                            conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE notif_id=%s", (row['Notif_ID'],))
-                            conn.commit()
-                            conn.close()
-                            st.cache_data.clear()
-                            st.success("Reply sent!")
-                            st.rerun()
+                        key_name = f"rep_msg_{row['Notif_ID']}"
+                        st.text_input("Type your reply...", key=key_name)
+                        st.button("Send Reply", key=f"rep_btn_{row['Notif_ID']}", on_click=cb_send_reply, args=(row['Notif_ID'], row['Sender_ID'], key_name, my_id))
     else:
         st.success("No new unread messages.")
         
@@ -579,8 +585,58 @@ if not st.session_state['logged_in']:
     .stTextInput input::placeholder { color: #A0AEC0 !important; -webkit-text-fill-color: #A0AEC0 !important; }
     [data-testid="stFormSubmitButton"] button { background-color: #111111 !important; color: #FFFFFF !important; border-radius: 12px !important; font-weight: 900 !important; font-size: 16px !important; padding: 10px 30px !important; border: none !important; transition: all 0.3s ease; margin-top: 15px; }
     [data-testid="stFormSubmitButton"] button:hover { background-color: #333333 !important; transform: translateY(-2px); }
+    .robot-container { display: flex; justify-content: center; align-items: end; height: 80px; margin-bottom: -70px; position: relative; z-index: 10; }
+    .robot-face { width: 90px; height: 70px; background-color: #D1D5DB; border-radius: 20px 20px 5px 5px; position: relative; display: flex; justify-content: center; align-items: center; gap: 15px; box-shadow: 0px -5px 15px rgba(0,0,0,0.05); }
+    .eye { width: 26px; height: 26px; background-color: #FFFFFF; border-radius: 50%; position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center; border: 2px solid #A0AEC0; }
+    .pupil { width: 12px; height: 12px; background-color: #1A202C; border-radius: 50%; position: absolute; transition: transform 0.1s ease-out; }
+    .eyelid { position: absolute; top: 0; left: 0; width: 100%; height: 0%; background-color: #A0AEC0; transition: height 0.2s ease-in-out; z-index: 2; }
     </style>
     """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="robot-container">
+        <div class="robot-face">
+            <div class="eye">
+                <div class="pupil pupil-left"></div>
+                <div class="eyelid eyelid-left"></div>
+            </div>
+            <div class="eye">
+                <div class="pupil pupil-right"></div>
+                <div class="eyelid eyelid-right"></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    components.html("""
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const parentDoc = window.parent.document;
+        function attachInteractions() {
+            const pupils = parentDoc.querySelectorAll('.pupil');
+            const eyelids = parentDoc.querySelectorAll('.eyelid');
+            const inputs = parentDoc.querySelectorAll('input');
+            if (inputs.length < 2 || pupils.length === 0) { setTimeout(attachInteractions, 300); return; }
+            const passwordInput = inputs[1];
+            parentDoc.addEventListener('mousemove', (e) => {
+                if (parentDoc.activeElement === passwordInput) return; 
+                pupils.forEach(pupil => {
+                    const rect = pupil.getBoundingClientRect();
+                    const x = Math.max(-6, Math.min(6, (e.clientX - rect.left) / 30));
+                    const y = Math.max(-6, Math.min(6, (e.clientY - rect.top) / 30));
+                    pupil.style.transform = `translate(${x}px, ${y}px)`;
+                });
+            });
+            passwordInput.addEventListener('focus', () => {
+                eyelids.forEach(el => el.style.height = '100%');
+                pupils.forEach(pupil => pupil.style.transform = `translate(0px, 0px)`);
+            });
+            passwordInput.addEventListener('blur', () => { eyelids.forEach(el => el.style.height = '0%'); });
+        }
+        attachInteractions();
+    });
+    </script>
+    """, height=0, width=0)
 
     col1, col2, col3 = st.columns([1, 1.2, 1])
     
@@ -618,7 +674,7 @@ if not st.session_state['logged_in']:
                 st.caption("Submit your details. The System Admin will configure your official account.")
                 req_name = st.text_input("Your Full Name")
                 req_phone = st.text_input("Your Phone Number")
-                req_role = st.selectbox("Requested Role", ["Worker", "Marketer", "Driver", "Branch Manager", "HR"])
+                req_role = st.selectbox("Requested Role", ["Worker", "Marketer", "Driver", "Branch Manager", "Operations Manager", "HR"])
                 
                 if st.form_submit_button("Send Request to Admin", type="primary"):
                     if req_name.strip() and req_phone.strip():
@@ -643,7 +699,7 @@ else:
     st.sidebar.title(f"👤 {st.session_state['name']}")
     st.sidebar.write(f"**Role:** {st.session_state['role']}")
     
-    if st.session_state['role'] not in ['System Admin', 'CEO', 'General Manager']:
+    if st.session_state['role'] not in ['System Admin', 'CEO', 'General Manager', 'Operations Manager']:
         st.sidebar.write(f"**Status:** {fresh_status}")
     st.sidebar.write("---")
 
@@ -685,6 +741,16 @@ else:
                     msg_content = dm_msg.strip() if dm_msg.strip() else "📎 Sent an attached file."
                     log_notification(st.session_state['user_id'], None, None, target_id, msg_content, file_path, file_name)
                     st.success(f"Sent to {selected_user.split(' (')[0]}!")
+        
+        with st.sidebar.expander("🔐 Request Password Change"):
+            with st.form("pwd_req"):
+                new_pwd = st.text_input("New Password Desired")
+                if st.form_submit_button("Send Request to Admin"):
+                    if new_pwd.strip():
+                        log_notification(st.session_state['user_id'], 'System Admin', None, None, f"🔐 Password Change Request from {st.session_state['name']} ({st.session_state['role']}). Requested new password: {new_pwd}")
+                        st.success("Request sent! The Admin will update it soon.")
+                    else:
+                        st.error("Enter a valid password.")
         st.sidebar.write("---")
 
     # 🔴 BULLETPROOF LOGOUT FIX
@@ -698,23 +764,6 @@ else:
             
         time.sleep(1)
         st.rerun()
-
-    # =========================================================
-    # THE PAYWALL LOGIC 
-    # =========================================================
-    if st.session_state['role'] not in ['CEO', 'System Admin']:
-        has_active_sub, valid_until_date = check_subscription(st.session_state['user_id'])
-        if not has_active_sub:
-            st.error("🔒 Account Locked: Payment Required")
-            amount_due = 100 if st.session_state['role'] in ['Worker', 'Driver', 'Marketer'] else 200
-            st.info(f"**Account Role:** {st.session_state['role']} \n\n **Monthly Fee:** KES {amount_due}")
-            if st.button(f"🟢 Pay KES {amount_due} via M-Pesa", use_container_width=True):
-                process_payment(st.session_state['user_id'], st.session_state['role'], st.session_state['name'])
-                st.success("Payment successful!")
-                st.rerun() 
-            st.stop() 
-        else:
-            st.sidebar.success(f"Sub Active until: {valid_until_date}")
 
     # =========================================================
     # UNIVERSAL LEAVE REQUEST
@@ -822,7 +871,7 @@ else:
                 new_u_name = st.text_input("Full Name")
                 new_u_phone = st.text_input("Phone Number (Used for Login)")
                 new_u_pass = st.text_input("Temporary Password", value="pass123")
-                new_u_role = st.selectbox("Assign Role", ["Worker", "Marketer", "Driver", "Branch Manager", "General Manager", "HR", "CEO"])
+                new_u_role = st.selectbox("Assign Role", ["Worker", "Marketer", "Driver", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO"])
                 new_u_branch = st.selectbox("Assign to Branch", list(branch_options.keys()))
                 
                 if st.form_submit_button("Create User Account"):
@@ -838,7 +887,7 @@ else:
                         st.error("Name, Phone, and Password are all required fields.")
             
             st.write("---")
-            st.write("### Manage Existing Employees")
+            st.write("### 🛠️ Edit / Manage Existing Employees")
             user_list_df = get_all_users_df()
             
             if not user_list_df.empty:
@@ -850,26 +899,43 @@ else:
                 
                 if selected_edit_user != "-- Select Employee --":
                     edit_user_id = edit_user_options[selected_edit_user]
-                    col_u1, col_u2 = st.columns(2)
                     
-                    with col_u1:
-                        with st.form("update_branch_form"):
-                            st.write("**Reassign Branch**")
-                            new_assign_branch = st.selectbox("Select New Branch", list(branch_options.keys()))
-                            if st.form_submit_button("Update Branch", type="primary"):
-                                update_user_branch(edit_user_id, branch_options[new_assign_branch])
-                                st.cache_data.clear()
-                                st.success(f"Branch reassigned to {new_assign_branch} successfully!")
-                                st.rerun()
-                                
-                    with col_u2:
+                    user_info = get_full_user_details(edit_user_id)
+                    if user_info:
+                        with st.form("edit_full_user_form"):
+                            st.write("**Edit Account Details**")
+                            e_name = st.text_input("Full Name", value=user_info[0])
+                            e_phone = st.text_input("Phone Number", value=user_info[1])
+                            e_pass = st.text_input("Password", value=user_info[2])
+                            
+                            roles = ["Worker", "Marketer", "Driver", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO", "System Admin"]
+                            current_role_index = roles.index(user_info[3]) if user_info[3] in roles else 0
+                            e_role = st.selectbox("Role", roles, index=current_role_index)
+                            
+                            branch_list = list(branch_options.keys())
+                            branch_values = list(branch_options.values())
+                            current_branch_index = branch_values.index(user_info[4]) if user_info[4] in branch_values else 0
+                            e_branch = st.selectbox("Branch", branch_list, index=current_branch_index)
+                            
+                            if st.form_submit_button("💾 Save Changes", type="primary"):
+                                succ, msg = update_user_full(edit_user_id, e_name, e_phone, e_pass, e_role, branch_options[e_branch])
+                                if succ:
+                                    st.cache_data.clear()
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                                    
+                        st.write("---")
                         with st.form("delete_user_form"):
                             st.write("**Remove Employee**")
                             st.caption("Warning: This action permanently deletes their login.")
-                            if st.form_submit_button("Delete User", type="primary"):
+                            if st.form_submit_button("🗑️ Delete User", type="secondary"):
                                 delete_user(edit_user_id)
                                 st.cache_data.clear()
                                 st.success("User deleted successfully!")
+                                time.sleep(1)
                                 st.rerun()
 
             st.write("---")
@@ -895,12 +961,12 @@ else:
                         st.cache_data.clear()
                         st.rerun()
             else:
-                st.success("No pending access requests.")
+                st.success("No pending requests.")
 
     # =========================================================
     # UNIVERSAL TIME TRACKER & WORKFLOW
     # =========================================================
-    elif st.session_state['role'] != 'CEO':
+    elif st.session_state['role'] not in ['CEO', 'General Manager', 'Operations Manager', 'HR']:
         att_record = get_attendance_record(st.session_state['user_id'])
         
         if att_record:
@@ -932,7 +998,6 @@ else:
                     st.write("### 📍 Step 2: Verify on Map & Check In")
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=19)
                     
-                    # 🔴 RESTORED TO 50 METERS 🔴
                     folium.Circle(location=[b_lat, b_lon], radius=50, color="blue", fill=True, fill_opacity=0.2).add_to(m)
                     
                     folium.Marker([b_lat, b_lon], tooltip="Branch", icon=folium.Icon(color="green", icon="building", prefix='fa')).add_to(m)
@@ -948,9 +1013,11 @@ else:
                                 log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                 if st.session_state['role'] == 'Driver':
                                     log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
+                                    log_notification(None, 'Operations Manager', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
                                     log_notification(None, 'CEO', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
                                 else:
                                     log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) checked in from the field.")
+                                    log_notification(None, 'Operations Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) checked in from the field.")
                                 st.cache_data.clear()
                                 try: st.query_params.clear()
                                 except: pass
@@ -959,7 +1026,6 @@ else:
                             else:
                                 distance_to_branch = calculate_distance(b_lat, b_lon, worker_lat, worker_lon)
                                 
-                                # 🔴 RESTORED TO 50 METERS 🔴
                                 if distance_to_branch <= 50:
                                     log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                     st.cache_data.clear()
@@ -977,9 +1043,8 @@ else:
                     st.cache_data.clear()
                     st.rerun()
             
-            if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
-                st.write("---")
-                render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
+            st.write("---")
+            render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
             st.stop() 
 
         is_working = True
@@ -1017,9 +1082,8 @@ else:
                     st.cache_data.clear()
                     st.rerun()
                 
-                if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
-                    st.write("---")
-                    render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
+                st.write("---")
+                render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
                 st.stop() 
             
             else:
@@ -1045,14 +1109,13 @@ else:
                     else:
                         st.caption("✅ 1h Lunch break fully used.")
 
-        if st.session_state['role'] in ['Worker', 'Driver', 'Marketer']:
-            st.write("---")
-            render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
+        st.write("---")
+        render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
         
         # =========================================================
         # ROLE-SPECIFIC TASKS 
         # =========================================================
-        if is_working or st.session_state['role'] in ['Branch Manager', 'General Manager', 'HR']:
+        if is_working or st.session_state['role'] in ['Branch Manager']:
             
             if st.session_state['role'] == "Marketer" and is_working:
                 st.write("### 💸 Log Daily Field Expenses")
@@ -1065,6 +1128,7 @@ else:
                             b_id = st.session_state['branch_id'] if st.session_state['branch_id'] else 1
                             log_expense(b_id, exp_amount, exp_desc)
                             log_notification(None, 'General Manager', None, None, f"💸 Marketer {st.session_state['name']} logged a field expense: KES {exp_amount} for {exp_desc}.")
+                            log_notification(None, 'Operations Manager', None, None, f"💸 Marketer {st.session_state['name']} logged a field expense: KES {exp_amount} for {exp_desc}.")
                             st.cache_data.clear()
                             st.success("Expense logged securely to finance!")
                         else:
@@ -1077,6 +1141,7 @@ else:
                     if st.button("🚀 Start Journey", use_container_width=True, type="primary"):
                         start_journey(st.session_state['user_id'])
                         log_notification(None, 'General Manager', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
+                        log_notification(None, 'Operations Manager', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
                         log_notification(None, 'CEO', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
                         st.cache_data.clear()
                         st.rerun()
@@ -1100,11 +1165,11 @@ else:
                         if d_lat and d_lon:
                             log_delivery(active_journey, d_lat, d_lon)
                             
-                            # 🔴 TRUE GOOGLE MAPS LINK FIX FOR DRIVERS 🔴
                             map_link = f"https://www.google.com/maps/search/?api=1&query={d_lat},{d_lon}"
-                            
                             msg = f"📦 {st.session_state['name']} logged a delivery stop. [📍 View Location]({map_link})"
+                            
                             log_notification(None, 'General Manager', None, None, msg)
+                            log_notification(None, 'Operations Manager', None, None, msg)
                             log_notification(None, 'CEO', None, None, msg)
                             st.cache_data.clear()
                             st.success("Delivery logged!")
@@ -1118,12 +1183,13 @@ else:
                     if st.button("🏁 Return to Branch & End Journey", use_container_width=True, type="secondary"):
                         end_journey(active_journey)
                         log_notification(None, 'General Manager', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
+                        log_notification(None, 'Operations Manager', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
                         log_notification(None, 'CEO', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
                         st.cache_data.clear()
                         st.rerun()
 
             elif st.session_state['role'] == "Branch Manager":
-                tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚙️ Operations", "📅 Schedule Meeting", "📊 Performance", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
+                tab1, tab2, tab3, tab4 = st.tabs(["⚙️ Operations", "📅 Schedule Meeting", "📊 Performance", "📞 Directory"])
                 
                 with tab1:
                     col1, col2 = st.columns([2, 1])
@@ -1175,6 +1241,7 @@ else:
                             if st.button("Submit Daily Financials", type="primary"):
                                 log_daily_sales(st.session_state['branch_id'], daily_sales)
                                 log_notification(None, 'General Manager', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
+                                log_notification(None, 'Operations Manager', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
                                 log_notification(None, 'CEO', None, None, f"💰 Branch {st.session_state['branch_id']} submitted Daily Sales: KES {daily_sales}.")
                                 
                                 if exp_desc.strip() != "":
@@ -1253,200 +1320,6 @@ else:
                         st.dataframe(dir_df, column_config={"Call": st.column_config.LinkColumn("Action", display_text="📞 Call Now")}, hide_index=True, use_container_width=True)
                     else:
                         st.info("No active employees found.")
-                        
-                with tab5:
-                    render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
-
-            elif st.session_state['role'] == "HR":
-                tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Leaves", "🚨 Live Status", "🏆 Rankings", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
-                with tab1:
-                    hr_leaves = get_df("SELECT lr.request_id AS \"Request_ID\", u.full_name as \"Employee\", lr.start_date AS \"Start_Date\", lr.end_date AS \"End_Date\", lr.reason AS \"Reason\", lr.status AS \"Status\" FROM leave_requests lr JOIN users u ON lr.user_id = u.user_id WHERE lr.status='Pending HR'")
-                    if not hr_leaves.empty:
-                        for index, row in hr_leaves.iterrows():
-                            with st.expander(f"Request from {row['Employee']} ({row['Start_Date']} to {row['End_Date']})"):
-                                st.write(f"**Reason:** {row['Reason']}")
-                                col1, col2 = st.columns(2)
-                                if col1.button(f"Approve & Send to CEO", key=f"approve_{row['Request_ID']}", type="primary"):
-                                    update_leave_status(row['Request_ID'], 'Pending CEO')
-                                    log_notification(None, 'CEO', None, None, f"📝 HR Approved leave for {row['Employee']}. Awaiting your final confirmation.")
-                                    st.cache_data.clear()
-                                    st.rerun()
-                                if col2.button(f"Reject", key=f"reject_{row['Request_ID']}"):
-                                    update_leave_status(row['Request_ID'], 'Rejected by HR')
-                                    st.cache_data.clear()
-                                    st.rerun()
-                    else:
-                        st.info("No pending requests.")
-                        
-                with tab2:
-                    st.write("### Live Workforce Roster")
-                    date_today = datetime.now().strftime("%Y-%m-%d")
-                    all_users_query = f'''
-                        SELECT u.full_name AS "Name", u.role AS "Role", COALESCE(b.branch_name, 'Corporate') AS "Branch",
-                               a.check_in_time AS "Check_In_Time", a.check_out_time AS "Check_Out_Time", a.on_break AS "On_Break", a.checkout_status AS "Checkout_Status", a.checkin_status AS "Checkin_Status", a.check_in_lat AS "Check_In_Lat", a.check_in_lon AS "Check_In_Lon"
-                        FROM users u
-                        LEFT JOIN branches b ON u.branch_id = b.branch_id
-                        LEFT JOIN attendance a ON u.user_id = a.user_id AND a.date = '{date_today}'
-                        WHERE u.role NOT IN ('CEO', 'System Admin')
-                    '''
-                    all_df = get_df(all_users_query)
-                    
-                    if not all_df.empty:
-                        def get_live_status(row):
-                            if pd.isna(row['Check_In_Time']): return "⚪ Not Logged In"
-                            if row['Checkin_Status'] in ['Pending GM', 'Pending Manager']: return "⏳ Check-In Pending"
-                            if not pd.isna(row['Checkout_Status']):
-                                if row['Checkout_Status'] == 'Approved': return "🛑 Checked Out"
-                                if row['Checkout_Status'] in ['Pending Manager', 'Pending GM']: return "⏳ Pending Checkout"
-                            if row['On_Break'] == 1: return "🍱 On Lunch"
-                            return "🟢 Working Active"
-                        
-                        # 🔴 TRUE GOOGLE MAPS LINK FIX FOR HR ROSTER 🔴
-                        def get_loc_link(row):
-                            if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
-                                return f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}"
-                            return None
-
-                        all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
-                        all_df['Location'] = all_df.apply(get_loc_link, axis=1)
-                        display_df = all_df[['Name', 'Role', 'Branch', 'Live Status', 'Location']]
-                        
-                        search_hr_roster = st.text_input("🔍 Search Roster...", key="hr_roster_search")
-                        if search_hr_roster:
-                            display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_hr_roster, case=False, na=False)).any(axis=1)]
-                        
-                        st.dataframe(
-                            display_df, 
-                            use_container_width=True, 
-                            hide_index=True,
-                            column_config={"Location": st.column_config.LinkColumn("GPS Map", display_text="📍 View Map")}
-                        )
-                    else:
-                        st.info("No employees found in system.")
-                        
-                with tab3:
-                    st.write("### 🏆 Monthly Attendance Ranking")
-                    st.caption("Ranks employees by the number of days they have actively worked this month.")
-                    att_rank_df = get_monthly_attendance_ranking()
-                    if not att_rank_df.empty:
-                        st.dataframe(att_rank_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No attendance data recorded yet this month.")
-                        
-                    st.write("---")
-                    st.write("### Weekly Branch Leaderboard")
-                    rank_df = get_weekly_rankings_df()
-                    if not rank_df.empty:
-                        st.dataframe(rank_df[['Rank', 'Branch_Name', 'Weekly Sales (KES)']], use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No sales data available.")
-                
-                with tab4:
-                    st.write("### 📞 Global Contact Directory")
-                    dir_df = get_directory_df()
-                    if not dir_df.empty:
-                        search_hr_dir = st.text_input("🔍 Search Directory...", key="hr_dir_search")
-                        if search_hr_dir:
-                            dir_df = dir_df[dir_df.astype(str).apply(lambda x: x.str.contains(search_hr_dir, case=False, na=False)).any(axis=1)]
-                        st.dataframe(dir_df, column_config={"Call": st.column_config.LinkColumn("Action", display_text="📞 Call Now")}, hide_index=True, use_container_width=True)
-
-                with tab5:
-                    render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
-
-            elif st.session_state['role'] == "General Manager":
-                st.write("### General Manager Operations")
-                
-                gm_tab1, gm_tab2, gm_tab3, gm_tab4, gm_tab5, gm_tab6, gm_tab7 = st.tabs(["🌍 Field Approvals", "💰 Daily", "🏆 Leaderboards", "📅 Calendar", "📜 Finance", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
-                
-                with gm_tab1:
-                    st.write("### 🌍 Field Marketer & Driver Approvals")
-                    st.caption("Review live GPS check-ins and approve field checkouts.")
-                    
-                    pending_out_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_out_time AS \"Check_Out_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE a.checkout_status = 'Pending GM'"
-                    pending_out_df = get_df(pending_out_query)
-                    
-                    if not pending_out_df.empty:
-                        st.write("#### 🛑 Pending Check-Outs")
-                        for _, row in pending_out_df.iterrows():
-                            col_o1, col_o2, col_o3 = st.columns([3, 1, 1])
-                            col_o1.warning(f"**{row['Name']}** requested checkout at {row['Check_Out_Time']}")
-                            if col_o2.button("Approve Out", key=f"gm_app_out_{row['Record_ID']}", type="primary"):
-                                conn = get_connection()
-                                conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
-                                conn.commit()
-                                conn.close()
-                                st.cache_data.clear()
-                                st.rerun()
-                            if col_o3.button("Deny", key=f"gm_den_{row['Record_ID']}"):
-                                conn = get_connection()
-                                conn.cursor().execute("UPDATE attendance SET checkout_status='Active', check_out_time=NULL WHERE record_id=%s", (row['Record_ID'],))
-                                conn.commit()
-                                conn.close()
-                                st.cache_data.clear()
-                                st.rerun()
-                    else:
-                        st.caption("No pending checkouts.")
-
-                with gm_tab2:
-                    st.write("### Today's Branch Sales Rankings")
-                    date_today = datetime.now().strftime("%Y-%m-%d")
-                    daily_query = f"SELECT b.branch_name AS \"Branch\", SUM(ds.total_sales) AS \"Total Sales (KES)\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id WHERE ds.date = '{date_today}' GROUP BY b.branch_name ORDER BY \"Total Sales (KES)\" DESC"
-                    daily_df = get_df(daily_query)
-                    if not daily_df.empty:
-                        daily_df.index = daily_df.index + 1 
-                        st.dataframe(daily_df, use_container_width=True)
-                    else:
-                        st.info("No sales reports submitted today.")
-                        
-                with gm_tab3:
-                    st.write("### Weekly Branch Leaderboard")
-                    rank_df = get_weekly_rankings_df()
-                    if not rank_df.empty:
-                        st.dataframe(rank_df[['Rank', 'Branch_Name', 'Weekly Sales (KES)']], use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No sales data available for the week.")
-                        
-                    st.write("---")
-                    st.write("### Monthly Branch Leaderboard")
-                    m_rank_df = get_monthly_sales_rankings_df()
-                    if not m_rank_df.empty:
-                        st.dataframe(m_rank_df[['Rank', 'Branch_Name', 'Monthly Sales (KES)']], use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No sales data available for the month.")
-                        
-                with gm_tab4:
-                    st.write("### 📅 Historical Data Explorer")
-                    view_date = st.date_input("Select a specific date to view:", dt.date.today(), key="gm_date")
-                    view_date_str = str(view_date)
-                    
-                    st.write(f"**Sales on {view_date_str}**")
-                    day_sales_query = f"SELECT b.branch_name AS \"Branch\", SUM(ds.total_sales) AS \"Total Sales (KES)\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id WHERE ds.date = '{view_date_str}' GROUP BY b.branch_name ORDER BY \"Total Sales (KES)\" DESC"
-                    day_sales_df = get_df(day_sales_query)
-                    if not day_sales_df.empty:
-                        st.dataframe(day_sales_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.caption("No sales reported on this date.")
-                        
-                with gm_tab5:
-                    st.write("### Master Transaction Log")
-                    history_query = "SELECT ds.date AS \"Date\", b.branch_name AS \"Branch_Name\", ds.total_sales AS \"Total_Sales\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id ORDER BY ds.date DESC"
-                    hist_df = get_df(history_query)
-                    if not hist_df.empty:
-                        st.dataframe(hist_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No history found.")
-                        
-                with gm_tab6:
-                    st.write("### 📞 Global Contact Directory")
-                    dir_df = get_directory_df()
-                    if not dir_df.empty:
-                        search_gm_dir = st.text_input("🔍 Search Directory...", key="gm_dir_search")
-                        if search_gm_dir:
-                            dir_df = dir_df[dir_df.astype(str).apply(lambda x: x.str.contains(search_gm_dir, case=False, na=False)).any(axis=1)]
-                        st.dataframe(dir_df, column_config={"Call": st.column_config.LinkColumn("Action", display_text="📞 Call Now")}, hide_index=True, use_container_width=True)
-                
-                with gm_tab7:
-                    render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
 
             # --- UNIVERSAL CHECKOUT BUTTON ---
             if is_working:
@@ -1459,6 +1332,7 @@ else:
                             
                         if st.session_state['role'] == 'Driver':
                             log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                            log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
                             log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
                         elif st.session_state['role'] == 'Worker':
                             log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
@@ -1466,6 +1340,205 @@ else:
                         st.cache_data.clear()
                         st.success("Checkout requested!")
                         st.rerun()
+
+    # =========================================================
+    # HR DASHBOARD
+    # =========================================================
+    elif st.session_state['role'] == "HR":
+        st.title("HR Operations Portal")
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Leaves", "🚨 Live Status", "🏆 Rankings", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
+        
+        with tab1:
+            hr_leaves = get_df("SELECT lr.request_id AS \"Request_ID\", u.full_name as \"Employee\", lr.start_date AS \"Start_Date\", lr.end_date AS \"End_Date\", lr.reason AS \"Reason\", lr.status AS \"Status\" FROM leave_requests lr JOIN users u ON lr.user_id = u.user_id WHERE lr.status='Pending HR'")
+            if not hr_leaves.empty:
+                for index, row in hr_leaves.iterrows():
+                    with st.expander(f"Request from {row['Employee']} ({row['Start_Date']} to {row['End_Date']})"):
+                        st.write(f"**Reason:** {row['Reason']}")
+                        col1, col2 = st.columns(2)
+                        if col1.button(f"Approve & Send to CEO", key=f"approve_{row['Request_ID']}", type="primary"):
+                            update_leave_status(row['Request_ID'], 'Pending CEO')
+                            log_notification(None, 'CEO', None, None, f"📝 HR Approved leave for {row['Employee']}. Awaiting your final confirmation.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        if col2.button(f"Reject", key=f"reject_{row['Request_ID']}"):
+                            update_leave_status(row['Request_ID'], 'Rejected by HR')
+                            st.cache_data.clear()
+                            st.rerun()
+            else:
+                st.info("No pending requests.")
+                
+        with tab2:
+            st.write("### Live Workforce Roster")
+            date_today = datetime.now().strftime("%Y-%m-%d")
+            all_users_query = f'''
+                SELECT u.full_name AS "Name", u.role AS "Role", COALESCE(b.branch_name, 'Corporate') AS "Branch",
+                       a.check_in_time AS "Check_In_Time", a.check_out_time AS "Check_Out_Time", a.on_break AS "On_Break", a.checkout_status AS "Checkout_Status", a.checkin_status AS "Checkin_Status", a.check_in_lat AS "Check_In_Lat", a.check_in_lon AS "Check_In_Lon"
+                FROM users u
+                LEFT JOIN branches b ON u.branch_id = b.branch_id
+                LEFT JOIN attendance a ON u.user_id = a.user_id AND a.date = '{date_today}'
+                WHERE u.role NOT IN ('CEO', 'System Admin')
+            '''
+            all_df = get_df(all_users_query)
+            
+            if not all_df.empty:
+                def get_live_status(row):
+                    if pd.isna(row['Check_In_Time']): return "⚪ Not Logged In"
+                    if row['Checkin_Status'] in ['Pending GM', 'Pending Manager']: return "⏳ Check-In Pending"
+                    if not pd.isna(row['Checkout_Status']):
+                        if row['Checkout_Status'] == 'Approved': return "🛑 Checked Out"
+                        if row['Checkout_Status'] in ['Pending Manager', 'Pending GM']: return "⏳ Pending Checkout"
+                    if row['On_Break'] == 1: return "🍱 On Lunch"
+                    return "🟢 Working Active"
+                
+                def get_loc_link(row):
+                    if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
+                        return f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}"
+                    return None
+
+                all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
+                all_df['Location'] = all_df.apply(get_loc_link, axis=1)
+                display_df = all_df[['Name', 'Role', 'Branch', 'Live Status', 'Location']]
+                
+                search_hr_roster = st.text_input("🔍 Search Roster...", key="hr_roster_search")
+                if search_hr_roster:
+                    display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_hr_roster, case=False, na=False)).any(axis=1)]
+                
+                st.dataframe(
+                    display_df, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={"Location": st.column_config.LinkColumn("GPS Map", display_text="🌍 TAP TO OPEN MAP")}
+                )
+            else:
+                st.info("No employees found in system.")
+                
+        with tab3:
+            st.write("### 🏆 Monthly Attendance Ranking")
+            st.caption("Ranks employees by the number of days they have actively worked this month.")
+            att_rank_df = get_monthly_attendance_ranking()
+            if not att_rank_df.empty:
+                st.dataframe(att_rank_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No attendance data recorded yet this month.")
+                
+            st.write("---")
+            st.write("### Weekly Branch Leaderboard")
+            rank_df = get_weekly_rankings_df()
+            if not rank_df.empty:
+                st.dataframe(rank_df[['Rank', 'Branch_Name', 'Weekly Sales (KES)']], use_container_width=True, hide_index=True)
+            else:
+                st.info("No sales data available.")
+        
+        with tab4:
+            st.write("### 📞 Global Contact Directory")
+            dir_df = get_directory_df()
+            if not dir_df.empty:
+                search_hr_dir = st.text_input("🔍 Search Directory...", key="hr_dir_search")
+                if search_hr_dir:
+                    dir_df = dir_df[dir_df.astype(str).apply(lambda x: x.str.contains(search_hr_dir, case=False, na=False)).any(axis=1)]
+                st.dataframe(dir_df, column_config={"Call": st.column_config.LinkColumn("Action", display_text="📞 Call Now")}, hide_index=True, use_container_width=True)
+
+        with tab5:
+            render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
+
+    # =========================================================
+    # GENERAL MANAGER & OPERATIONS MANAGER DASHBOARD
+    # =========================================================
+    elif st.session_state['role'] in ["General Manager", "Operations Manager"]:
+        st.title(f"{st.session_state['role']} Operations")
+        
+        gm_tab1, gm_tab2, gm_tab3, gm_tab4, gm_tab5, gm_tab6, gm_tab7 = st.tabs(["🌍 Field Approvals", "💰 Daily", "🏆 Leaderboards", "📅 Calendar", "📜 Finance", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
+        
+        with gm_tab1:
+            st.write("### 🌍 Field Marketer & Driver Approvals")
+            st.caption("Review live GPS check-ins and approve field checkouts.")
+            
+            pending_out_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_out_time AS \"Check_Out_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE a.checkout_status = 'Pending GM'"
+            pending_out_df = get_df(pending_out_query)
+            
+            if not pending_out_df.empty:
+                st.write("#### 🛑 Pending Check-Outs")
+                for _, row in pending_out_df.iterrows():
+                    col_o1, col_o2, col_o3 = st.columns([3, 1, 1])
+                    col_o1.warning(f"**{row['Name']}** requested checkout at {row['Check_Out_Time']}")
+                    if col_o2.button("Approve Out", key=f"gm_app_out_{row['Record_ID']}", type="primary"):
+                        conn = get_connection()
+                        conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
+                        conn.commit()
+                        conn.close()
+                        st.cache_data.clear()
+                        st.rerun()
+                    if col_o3.button("Deny", key=f"gm_den_{row['Record_ID']}"):
+                        conn = get_connection()
+                        conn.cursor().execute("UPDATE attendance SET checkout_status='Active', check_out_time=NULL WHERE record_id=%s", (row['Record_ID'],))
+                        conn.commit()
+                        conn.close()
+                        st.cache_data.clear()
+                        st.rerun()
+            else:
+                st.caption("No pending checkouts.")
+
+        with gm_tab2:
+            st.write("### Today's Branch Sales Rankings")
+            date_today = datetime.now().strftime("%Y-%m-%d")
+            daily_query = f"SELECT b.branch_name AS \"Branch\", SUM(ds.total_sales) AS \"Total Sales (KES)\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id WHERE ds.date = '{date_today}' GROUP BY b.branch_name ORDER BY \"Total Sales (KES)\" DESC"
+            daily_df = get_df(daily_query)
+            if not daily_df.empty:
+                daily_df.index = daily_df.index + 1 
+                st.dataframe(daily_df, use_container_width=True)
+            else:
+                st.info("No sales reports submitted today.")
+                
+        with gm_tab3:
+            st.write("### Weekly Branch Leaderboard")
+            rank_df = get_weekly_rankings_df()
+            if not rank_df.empty:
+                st.dataframe(rank_df[['Rank', 'Branch_Name', 'Weekly Sales (KES)']], use_container_width=True, hide_index=True)
+            else:
+                st.info("No sales data available for the week.")
+                
+            st.write("---")
+            st.write("### Monthly Branch Leaderboard")
+            m_rank_df = get_monthly_sales_rankings_df()
+            if not m_rank_df.empty:
+                st.dataframe(m_rank_df[['Rank', 'Branch_Name', 'Monthly Sales (KES)']], use_container_width=True, hide_index=True)
+            else:
+                st.info("No sales data available for the month.")
+                
+        with gm_tab4:
+            st.write("### 📅 Historical Data Explorer")
+            view_date = st.date_input("Select a specific date to view:", dt.date.today(), key="gm_date")
+            view_date_str = str(view_date)
+            
+            st.write(f"**Sales on {view_date_str}**")
+            day_sales_query = f"SELECT b.branch_name AS \"Branch\", SUM(ds.total_sales) AS \"Total Sales (KES)\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id WHERE ds.date = '{view_date_str}' GROUP BY b.branch_name ORDER BY \"Total Sales (KES)\" DESC"
+            day_sales_df = get_df(day_sales_query)
+            if not day_sales_df.empty:
+                st.dataframe(day_sales_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No sales reported on this date.")
+                
+        with gm_tab5:
+            st.write("### Master Transaction Log")
+            history_query = "SELECT ds.date AS \"Date\", b.branch_name AS \"Branch_Name\", ds.total_sales AS \"Total_Sales\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id ORDER BY ds.date DESC"
+            hist_df = get_df(history_query)
+            if not hist_df.empty:
+                st.dataframe(hist_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No history found.")
+                
+        with gm_tab6:
+            st.write("### 📞 Global Contact Directory")
+            dir_df = get_directory_df()
+            if not dir_df.empty:
+                search_gm_dir = st.text_input("🔍 Search Directory...", key="gm_dir_search")
+                if search_gm_dir:
+                    dir_df = dir_df[dir_df.astype(str).apply(lambda x: x.str.contains(search_gm_dir, case=False, na=False)).any(axis=1)]
+                st.dataframe(dir_df, column_config={"Call": st.column_config.LinkColumn("Action", display_text="📞 Call Now")}, hide_index=True, use_container_width=True)
+        
+        with gm_tab7:
+            render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
+
 
     # =========================================================
     # CEO DASHBOARD 
@@ -1477,6 +1550,23 @@ else:
         tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Data & Sales", "🚨 Live Status", "📅 History", "📢 Broadcast", "✅ Leaves", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
         
         with tab1:
+            st.write("### 🧠 AI System Report & Recommendations")
+            rank_query = f"SELECT b.branch_name, SUM(ds.total_sales) as sales FROM daily_sales ds JOIN branches b ON ds.branch_id=b.branch_id WHERE ds.date='{date_today}' GROUP BY b.branch_name ORDER BY sales DESC"
+            report_df = get_df(rank_query)
+            
+            if not report_df.empty:
+                top_branch = report_df.iloc[0]['branch_name']
+                top_sales = report_df.iloc[0]['sales']
+                st.success(f"🌟 **Top Performer Today:** {top_branch} is leading the company with KES {top_sales:,.2f} in sales.")
+                
+                if len(report_df) > 1:
+                    bottom_branch = report_df.iloc[-1]['branch_name']
+                    st.warning(f"⚠️ **Attention Needed:** {bottom_branch} is currently trailing in daily sales.")
+                    st.write(f"💡 **AI Recommendation:** Consider reassigning Field Marketers to the {bottom_branch} region tomorrow to boost local engagement, or review expenses with the {bottom_branch} Branch Manager to optimize profit margins.")
+            else:
+                st.info("The AI System is waiting for branches to submit their end-of-day sales to generate today's report.")
+
+            st.write("---")
             col_g1, col_g2 = st.columns(2)
             with col_g1:
                 st.write("### 📊 Weekly Sales vs Expenses")
@@ -1510,11 +1600,9 @@ else:
                     
             with col_g2:
                 st.write("### 🏆 Today's Rankings")
-                rank_query = f"SELECT b.branch_name AS \"Branch\", SUM(ds.total_sales) AS \"Total Sales (KES)\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id WHERE ds.date = '{date_today}' GROUP BY b.branch_name ORDER BY \"Total Sales (KES)\" DESC"
-                rank_df = get_df(rank_query)
-                if not rank_df.empty:
-                    rank_df.index = rank_df.index + 1 
-                    st.dataframe(rank_df, use_container_width=True)
+                if not report_df.empty:
+                    report_df.index = report_df.index + 1 
+                    st.dataframe(report_df.rename(columns={"branch_name": "Branch", "sales": "Total Sales (KES)"}), use_container_width=True)
                 else:
                     st.warning("No sales reports today.")
                     
@@ -1548,7 +1636,6 @@ else:
                     if row['On_Break'] == 1: return "🍱 On Lunch"
                     return "🟢 Working Active"
                 
-                # 🔴 TRUE GOOGLE MAPS LINK FIX FOR CEO ROSTER 🔴
                 def get_loc_link(row):
                     if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
                         return f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}"
@@ -1566,7 +1653,7 @@ else:
                     display_df, 
                     use_container_width=True, 
                     hide_index=True,
-                    column_config={"Location": st.column_config.LinkColumn("GPS Map", display_text="📍 View Map")}
+                    column_config={"Location": st.column_config.LinkColumn("GPS Map", display_text="🌍 TAP TO OPEN MAP")}
                 )
             else:
                 st.info("No employees found in system.")
@@ -1607,7 +1694,7 @@ else:
         with tab4:
             st.write("### 📢 Corporate Broadcast")
             with st.form("broadcast_form"):
-                audience = st.selectbox("Select Target Audience", ["Entire Company", "Branch Manager", "General Manager", "HR", "Worker", "Marketer", "Driver"])
+                audience = st.selectbox("Select Target Audience", ["Entire Company", "Branch Manager", "Operations Manager", "General Manager", "HR", "Worker", "Marketer", "Driver"])
                 b_message = st.text_area("Broadcast Message")
                 if st.form_submit_button("Send Broadcast", type="primary"):
                     log_notification(None, audience, None, None, f"📢 CEO ANNOUNCEMENT: {b_message}")
