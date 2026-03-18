@@ -438,6 +438,10 @@ def delete_user(user_id):
     cursor = conn.cursor()
     cursor.execute("DELETE FROM attendance WHERE user_id=%s", (user_id,))
     cursor.execute("DELETE FROM leave_requests WHERE user_id=%s", (user_id,))
+    
+    # 🔴 FIX: Clean up old billing records before deleting the user 🔴
+    cursor.execute("DELETE FROM billing WHERE user_id=%s", (user_id,))
+    
     cursor.execute("DELETE FROM driver_journeys WHERE driver_id=%s", (user_id,))
     cursor.execute("DELETE FROM notifications WHERE sender_id=%s OR target_user_id=%s", (user_id, user_id))
     cursor.execute("DELETE FROM users WHERE user_id=%s", (user_id,))
@@ -1771,7 +1775,6 @@ else:
                 with st.chat_message("user"):
                     st.markdown(prompt)
 
-                # Internal mock logic so you don't need API keys tonight
                 reply = "Based on current system data, maintaining a close eye on field marketer expenses against total daily sales is the most effective way to ensure high profit margins. Let me know if you need specific branch analysis."
                 prompt_lower = prompt.lower()
                 
