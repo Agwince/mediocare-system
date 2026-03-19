@@ -1,7 +1,7 @@
 import streamlit as st
 import psycopg2
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import datetime as dt
 import folium
 from streamlit_folium import st_folium
@@ -34,7 +34,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 def get_connection():
     return psycopg2.connect(DB_URL)
 
-# --- SILENT DATABASE MIGRATION FOR SHIFT HOURS ---
+# --- SILENT DATABASE MIGRATION ---
 def ensure_db_updates():
     try:
         conn = get_connection()
@@ -55,7 +55,7 @@ def get_df(query, params=None):
     return df
 
 # =========================================================
-# 🔴 THE BROWSER-LEVEL GPS FIX (SINGLE-LINE TO PREVENT TEXT SPILL)
+# THE BROWSER-LEVEL GPS SCRIPT
 # =========================================================
 def get_url_coords():
     try:
@@ -66,7 +66,7 @@ def get_url_coords():
         pass
     return None, None
 
-NATIVE_GPS_IFRAME = """<iframe srcdoc="<html><head><style>body{margin:0;padding:0;font-family:sans-serif;}button{background-color:#1484A6;color:white;padding:12px 20px;border:none;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%;box-shadow:0px 4px 6px rgba(0,0,0,0.1);transition:0.3s;}button:active{background-color:#0e607a;}</style></head><body><button id='btn' onclick='getLoc()'>📍 TAP HERE TO GET GPS LOCATION</button><script>function getLoc(){var btn = document.getElementById('btn');btn.innerText = '⏳ Locating... Please check for a pop-up...';btn.style.backgroundColor = '#E2E8F0';btn.style.color = '#1A202C';if(navigator.geolocation){navigator.geolocation.getCurrentPosition(function(pos){var lat = pos.coords.latitude;var lon = pos.coords.longitude;var currentUrl = window.parent.location.href.split('?')[0];window.parent.location.href = currentUrl + '?lat=' + lat + '&lon=' + lon;},function(err){alert('GPS Error: You must tap ALLOW when the browser asks for your location.');btn.innerText = '📍 TAP HERE TO GET GPS LOCATION';btn.style.backgroundColor = '#1484A6';btn.style.color = 'white';},{enableHighAccuracy:true, timeout:10000, maximumAge:0});}else{alert('Geolocation not supported.');}}</script></body></html>" width="100%" height="70px" style="border:none;" allow="geolocation"></iframe>"""
+NATIVE_GPS_IFRAME = """<iframe srcdoc="<html><head><style>body{margin:0;padding:0;font-family:sans-serif;}button{background-color:#1484A6;color:white;padding:12px 20px;border:none;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%;box-shadow:0px 4px 6px rgba(0,0,0,0.1);transition:0.3s;}button:active{background-color:#0e607a;}</style></head><body><button id='btn' onclick='getLoc()'>📍 TAP HERE TO GET GPS LOCATION</button><script>function getLoc(){var btn = document.getElementById('btn');btn.innerText = '⏳ Locating... Please wait up to 30 seconds...';btn.style.backgroundColor = '#E2E8F0';btn.style.color = '#1A202C';if(navigator.geolocation){navigator.geolocation.getCurrentPosition(function(pos){var lat = pos.coords.latitude;var lon = pos.coords.longitude;var currentUrl = window.parent.location.href.split('?')[0];window.parent.location.href = currentUrl + '?lat=' + lat + '&lon=' + lon;},function(err){var msg = 'GPS Error: Ensure Location is ON, step outside, and ALLOW permissions.';if(err.code == 3){msg = 'GPS Timeout: The signal is too weak. Please step outside and try again.';}alert(msg);btn.innerText = '📍 TAP HERE TO GET GPS LOCATION';btn.style.backgroundColor = '#1484A6';btn.style.color = 'white';},{enableHighAccuracy:true, timeout:30000, maximumAge:5000});}else{alert('Geolocation not supported.');}}</script></body></html>" width="100%" height="70px" style="border:none;" allow="geolocation"></iframe>"""
 
 # =========================================================
 # VISIBILITY FIX
@@ -189,6 +189,7 @@ def request_check_out(user_id, role):
     elif role in ['Branch Manager', 'General Manager', 'Operations Manager', 'CEO', 'HR', 'System Admin']:
         status = 'Approved'
     else:
+        # This routes Worker and Motorbike checkout requests to the Branch Manager
         status = 'Pending Manager'
     cursor.execute("UPDATE attendance SET checkout_status=%s WHERE user_id=%s AND date=%s", (status, user_id, date_today))
     conn.commit()
@@ -252,6 +253,14 @@ def get_active_journey(driver_id):
     res = cursor.fetchone()
     conn.close()
     return res[0] if res else None
+
+def get_driver_deliveries(journey_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT delivery_time, latitude, longitude FROM deliveries WHERE journey_id=%s ORDER BY delivery_time DESC", (journey_id,))
+    res = cursor.fetchall()
+    conn.close()
+    return res
 
 def start_journey(driver_id):
     conn = get_connection()
@@ -332,10 +341,10 @@ def get_monthly_sales_rankings_df():
 
 def get_directory_df(branch_id=None):
     if branch_id:
-        query = "SELECT full_name AS \"Name\", role AS \"Role\", phone_number AS \"Phone_Number\", performance_status AS \"Performance_Status\" FROM users WHERE role IN ('Worker', 'Driver', 'Marketer') AND branch_id = %s"
+        query = "SELECT full_name AS \"Name\", role AS \"Role\", phone_number AS \"Phone_Number\", performance_status AS \"Performance_Status\" FROM users WHERE role IN ('Worker', 'Driver', 'Marketer', 'Motorbike') AND branch_id = %s"
         df = get_df(query, (branch_id,))
     else:
-        query = "SELECT u.full_name AS \"Name\", u.role AS \"Role\", b.branch_name AS \"Branch\", u.phone_number AS \"Phone_Number\", u.performance_status AS \"Performance_Status\" FROM users u LEFT JOIN branches b ON u.branch_id = b.branch_id WHERE u.role IN ('Worker', 'Driver', 'Marketer')"
+        query = "SELECT u.full_name AS \"Name\", u.role AS \"Role\", b.branch_name AS \"Branch\", u.phone_number AS \"Phone_Number\", u.performance_status AS \"Performance_Status\" FROM users u LEFT JOIN branches b ON u.branch_id = b.branch_id WHERE u.role IN ('Worker', 'Driver', 'Marketer', 'Motorbike')"
         df = get_df(query)
     
     if not df.empty:
@@ -375,7 +384,6 @@ def add_branch(name, lat, lon, shift_hours=8.0):
     conn.commit()
     conn.close()
 
-# 🔴 NEW FUNCTION: Full Branch Update 🔴
 def update_branch_full(branch_id, name, lat, lon, shift_hours):
     conn = get_connection()
     cursor = conn.cursor()
@@ -433,16 +441,18 @@ def update_user_full(user_id, name, phone, password, role, branch_id):
         conn.close()
     return success, msg
 
+# 🔴 V1.1 HITLIST: THE ULTIMATE ADMIN CLEANUP 🔴
 def delete_user(user_id):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM attendance WHERE user_id=%s", (user_id,))
     cursor.execute("DELETE FROM leave_requests WHERE user_id=%s", (user_id,))
-    
-    # 🔴 FIX: Clean up old billing records before deleting the user 🔴
     cursor.execute("DELETE FROM billing WHERE user_id=%s", (user_id,))
     
+    # Cascade delete driver data
+    cursor.execute("DELETE FROM deliveries WHERE journey_id IN (SELECT journey_id FROM driver_journeys WHERE driver_id=%s)", (user_id,))
     cursor.execute("DELETE FROM driver_journeys WHERE driver_id=%s", (user_id,))
+    
     cursor.execute("DELETE FROM notifications WHERE sender_id=%s OR target_user_id=%s", (user_id, user_id))
     cursor.execute("DELETE FROM users WHERE user_id=%s", (user_id,))
     conn.commit()
@@ -562,7 +572,7 @@ def render_inbox(my_role, my_branch, my_id):
                 st.warning(f"🗣️ **{row['Title']}** with {row['Organizer_Name']} | 🗓️ {row['Date']} at {row['Time']}\n\n_{row['Description']}_")
 
 # =========================================================
-# 🔴 COOKIE MANAGER & SESSION STATE LOGIC
+# COOKIE MANAGER & SESSION STATE LOGIC
 # =========================================================
 cookie_manager = stx.CookieManager()
 
@@ -694,7 +704,7 @@ if not st.session_state['logged_in']:
                 st.caption("Submit your details. The System Admin will configure your official account.")
                 req_name = st.text_input("Your Full Name")
                 req_phone = st.text_input("Your Phone Number")
-                req_role = st.selectbox("Requested Role", ["Worker", "Marketer", "Driver", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO"])
+                req_role = st.selectbox("Requested Role", ["Worker", "Marketer", "Driver", "Motorbike", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO"])
                 
                 if st.form_submit_button("Send Request to Admin", type="primary"):
                     if req_name.strip() and req_phone.strip():
@@ -773,7 +783,6 @@ else:
                         st.error("Enter a valid password.")
         st.sidebar.write("---")
 
-    # 🔴 BULLETPROOF LOGOUT FIX
     if st.sidebar.button("Logout", type="secondary"):
         st.session_state['logout_clicked'] = True
         st.session_state['logged_in'] = False
@@ -893,7 +902,7 @@ else:
                 new_u_name = st.text_input("Full Name")
                 new_u_phone = st.text_input("Phone Number (Used for Login)")
                 new_u_pass = st.text_input("Temporary Password", value="pass123")
-                new_u_role = st.selectbox("Assign Role", ["Worker", "Marketer", "Driver", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO"])
+                new_u_role = st.selectbox("Assign Role", ["Worker", "Marketer", "Driver", "Motorbike", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO"])
                 new_u_branch = st.selectbox("Assign to Branch", list(branch_options.keys()))
                 
                 if st.form_submit_button("Create User Account"):
@@ -930,7 +939,7 @@ else:
                             e_phone = st.text_input("Phone Number", value=user_info[1])
                             e_pass = st.text_input("Password", value=user_info[2])
                             
-                            roles = ["Worker", "Marketer", "Driver", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO", "System Admin"]
+                            roles = ["Worker", "Marketer", "Driver", "Motorbike", "Branch Manager", "Operations Manager", "General Manager", "HR", "CEO", "System Admin"]
                             current_role_index = roles.index(user_info[3]) if user_info[3] in roles else 0
                             e_role = st.selectbox("Role", roles, index=current_role_index)
                             
@@ -952,7 +961,7 @@ else:
                         st.write("---")
                         with st.form("delete_user_form"):
                             st.write("**Remove Employee**")
-                            st.caption("Warning: This action permanently deletes their login.")
+                            st.caption("Warning: This action permanently deletes their login and complete system history.")
                             if st.form_submit_button("🗑️ Delete User", type="secondary"):
                                 delete_user(edit_user_id)
                                 st.cache_data.clear()
@@ -998,6 +1007,12 @@ else:
         if att_record is None:
             st.title(f"{st.session_state['role']} Dashboard ⚙️")
             st.write("Welcome to your shift. Please check in below to begin working.")
+            
+            # 🔴 V1.1 HITLIST: WEEKEND / HOLIDAY LOGIC
+            current_weekday = datetime.now().weekday()
+            if current_weekday >= 5: 
+                st.warning("🌴 **Weekend / Holiday Notice:** Today is a weekend. Standard shifts are paused. Please ensure you are explicitly scheduled for overtime or weekend duty before checking in.")
+            
             branch_coords = get_branch_coordinates(st.session_state['branch_id'])
             
             if branch_coords:
@@ -1031,12 +1046,14 @@ else:
                         if not worker_lat or not worker_lon:
                             st.error("⚠️ GPS Error: Location missing. Please tap the blue button above.")
                         else:
-                            if st.session_state['role'] in ['Marketer', 'Driver']:
+                            if st.session_state['role'] in ['Marketer', 'Driver', 'Motorbike']:
                                 log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
                                 if st.session_state['role'] == 'Driver':
                                     log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
                                     log_notification(None, 'Operations Manager', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
                                     log_notification(None, 'CEO', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
+                                elif st.session_state['role'] == 'Motorbike':
+                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🌍 {st.session_state['name']} (Motorbike) checked in from the field.")
                                 else:
                                     log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) checked in from the field.")
                                     log_notification(None, 'Operations Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) checked in from the field.")
@@ -1078,7 +1095,7 @@ else:
             
         # 3. CHECKED OUT BUT PENDING MANAGER APPROVAL
         elif checkout_status in ['Pending Manager', 'Pending GM']:
-            st.warning("⏳ Your checkout request is pending management approval. Your departure time is securely recorded.")
+            st.warning(f"⏳ Your checkout request is pending management approval. You clocked out at {check_out_time_str}.")
             is_working = False
             
         # 4. ACTIVELY WORKING
@@ -1156,15 +1173,20 @@ else:
                         else:
                             st.error("Please enter a description.")
             
-            elif st.session_state['role'] == "Driver" and is_working:
+            elif st.session_state['role'] in ["Driver", "Motorbike"] and is_working:
                 active_journey = get_active_journey(st.session_state['user_id'])
                 if not active_journey:
                     st.info("Start a journey when leaving for deliveries.")
                     if st.button("🚀 Start Journey", use_container_width=True, type="primary"):
                         start_journey(st.session_state['user_id'])
-                        log_notification(None, 'General Manager', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
-                        log_notification(None, 'Operations Manager', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
-                        log_notification(None, 'CEO', None, None, f"🚀 {st.session_state['name']} started a delivery journey.")
+                        
+                        if st.session_state['role'] == 'Motorbike':
+                            log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🚀 {st.session_state['name']} (Motorbike) started a local delivery journey.")
+                        else:
+                            log_notification(None, 'General Manager', None, None, f"🚀 {st.session_state['name']} (Driver) started a delivery journey.")
+                            log_notification(None, 'Operations Manager', None, None, f"🚀 {st.session_state['name']} (Driver) started a delivery journey.")
+                            log_notification(None, 'CEO', None, None, f"🚀 {st.session_state['name']} (Driver) started a delivery journey.")
+                        
                         st.cache_data.clear()
                         st.rerun()
                 else:
@@ -1190,9 +1212,13 @@ else:
                             map_link = f"https://www.google.com/maps/search/?api=1&query={d_lat},{d_lon}"
                             msg = f"📦 {st.session_state['name']} logged a delivery stop. [📍 View Location]({map_link})"
                             
-                            log_notification(None, 'General Manager', None, None, msg)
-                            log_notification(None, 'Operations Manager', None, None, msg)
-                            log_notification(None, 'CEO', None, None, msg)
+                            if st.session_state['role'] == 'Motorbike':
+                                log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, msg)
+                            else:
+                                log_notification(None, 'General Manager', None, None, msg)
+                                log_notification(None, 'Operations Manager', None, None, msg)
+                                log_notification(None, 'CEO', None, None, msg)
+                                
                             st.cache_data.clear()
                             st.success("Delivery logged!")
                             try: st.query_params.clear()
@@ -1201,12 +1227,28 @@ else:
                             st.rerun()
                         else:
                             st.error("Click the blue button above to get your location first!")
+                    
+                    # 🔴 V1.1 HITLIST: DRIVER LOCATION TIMESTAMPS
+                    st.write("---")
+                    st.write("### 📜 Today's Delivery Log")
+                    deliveries = get_driver_deliveries(active_journey)
+                    if deliveries:
+                        for d in deliveries:
+                            st.info(f"✅ **Delivered at {d[0]}** | [📍 View Exact Location](https://www.google.com/maps/search/?api=1&query={d[1]},{d[2]})")
+                    else:
+                        st.caption("No deliveries logged yet on this journey.")
                             
+                    st.write("---")
                     if st.button("🏁 Return to Branch & End Journey", use_container_width=True, type="secondary"):
                         end_journey(active_journey)
-                        log_notification(None, 'General Manager', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
-                        log_notification(None, 'Operations Manager', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
-                        log_notification(None, 'CEO', None, None, f"🏁 {st.session_state['name']} completed their journey and returned.")
+                        
+                        if st.session_state['role'] == 'Motorbike':
+                            log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🏁 {st.session_state['name']} (Motorbike) completed their deliveries and returned.")
+                        else:
+                            log_notification(None, 'General Manager', None, None, f"🏁 {st.session_state['name']} (Driver) completed their journey and returned.")
+                            log_notification(None, 'Operations Manager', None, None, f"🏁 {st.session_state['name']} (Driver) completed their journey and returned.")
+                            log_notification(None, 'CEO', None, None, f"🏁 {st.session_state['name']} (Driver) completed their journey and returned.")
+                            
                         st.cache_data.clear()
                         st.rerun()
 
@@ -1217,7 +1259,7 @@ else:
                     col1, col2 = st.columns([2, 1])
                     with col1:
                         st.write("### Today's Attendance")
-                        query = "SELECT u.full_name AS \"Name\", u.phone_number AS \"Phone\", a.check_in_time AS \"Check_In\", a.on_break AS \"On_Break\", u.performance_status AS \"Status\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND u.role != 'Driver' AND a.date = %s"
+                        query = "SELECT u.full_name AS \"Name\", u.phone_number AS \"Phone\", a.check_in_time AS \"Check_In\", a.on_break AS \"On_Break\", u.performance_status AS \"Status\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND u.role NOT IN ('Driver', 'Marketer') AND a.date = %s"
                         df = get_df(query, (st.session_state['branch_id'], datetime.now().strftime("%Y-%m-%d")))
                         if not df.empty:
                             df['On_Break'] = df['On_Break'].apply(lambda x: '🍱 On Lunch' if x == 1 else '⚙️ Working')
@@ -1227,7 +1269,7 @@ else:
                             
                         st.write("---")
                         st.write("### 🛑 Pending Checkouts")
-                        pending_out_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_out_time AS \"Check_Out_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND a.checkout_status = 'Pending Manager' AND u.role != 'Driver'"
+                        pending_out_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_out_time AS \"Check_Out_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND a.checkout_status = 'Pending Manager' AND u.role NOT IN ('Driver', 'Marketer')"
                         pending_out_df = get_df(pending_out_query, (st.session_state['branch_id'],))
                         
                         if not pending_out_df.empty:
@@ -1343,25 +1385,43 @@ else:
                     else:
                         st.info("No active employees found.")
 
-            # --- UNIVERSAL CHECKOUT BUTTON ---
+            # 🔴 V1.1 HITLIST: STRICT SHIFT GUARDRAILS & TIMESTAMPS 🔴
             if is_working:
                 st.write("---")
                 col_c1, col_c2, col_c3 = st.columns([1, 2, 1])
                 with col_c2:
                     st.write("### End Your Shift")
-                    if st.button("🛑 REQUEST CHECKOUT", use_container_width=True, type="secondary"):
-                        request_check_out(st.session_state['user_id'], st.session_state['role'])
-                            
-                        if st.session_state['role'] == 'Driver':
-                            log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                            log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                            log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                        elif st.session_state['role'] == 'Worker':
-                            log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
+                    
+                    branch_shift_hours = get_branch_shift_hours(st.session_state.get('branch_id'))
+                    check_in_dt = datetime.strptime(check_in_time_str, "%Y-%m-%d %H:%M:%S")
+                    expected_end_dt = check_in_dt + timedelta(hours=branch_shift_hours)
+                    now_dt = datetime.now()
+                    
+                    st.info(f"📥 **Clocked In:** {check_in_time_str}\n\n🏁 **Expected Shift End:** {expected_end_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                    
+                    if now_dt < expected_end_dt and st.session_state['role'] not in ['Branch Manager', 'General Manager', 'Operations Manager', 'CEO']:
+                        time_remaining = expected_end_dt - now_dt
+                        hours_left = int(time_remaining.total_seconds() // 3600)
+                        mins_left = int((time_remaining.total_seconds() % 3600) // 60)
+                        st.error(f"⚠️ **Shift Incomplete.** You still have {hours_left}h {mins_left}m remaining on your shift. Early checkout is locked by administration.")
+                        st.button("🛑 REQUEST CHECKOUT", use_container_width=True, disabled=True)
+                    else:
+                        st.success("✅ **Shift complete!** You are clear to check out, or you may remain clocked in for overtime.")
+                        if st.button("🛑 REQUEST CHECKOUT", use_container_width=True, type="secondary"):
+                            request_check_out(st.session_state['user_id'], st.session_state['role'])
                                 
-                        st.cache_data.clear()
-                        st.success("Checkout requested!")
-                        st.rerun()
+                            if st.session_state['role'] == 'Driver':
+                                log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                                log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                                log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                            elif st.session_state['role'] == 'Motorbike':
+                                log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has requested to check out.")
+                            elif st.session_state['role'] == 'Worker':
+                                log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
+                                    
+                            st.cache_data.clear()
+                            st.success("Checkout requested!")
+                            st.rerun()
 
     # =========================================================
     # HR DASHBOARD
@@ -1716,7 +1776,7 @@ else:
         with tab4:
             st.write("### 📢 Corporate Broadcast")
             with st.form("broadcast_form"):
-                audience = st.selectbox("Select Target Audience", ["Entire Company", "Branch Manager", "Operations Manager", "General Manager", "HR", "Worker", "Marketer", "Driver"])
+                audience = st.selectbox("Select Target Audience", ["Entire Company", "Branch Manager", "Operations Manager", "General Manager", "HR", "Worker", "Marketer", "Driver", "Motorbike"])
                 b_message = st.text_area("Broadcast Message")
                 if st.form_submit_button("Send Broadcast", type="primary"):
                     log_notification(None, audience, None, None, f"📢 CEO ANNOUNCEMENT: {b_message}")
