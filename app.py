@@ -600,6 +600,9 @@ if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'logout_clicked' not in st.session_state:
     st.session_state['logout_clicked'] = False
+# 🔴 NEW: SESSION STATE FOR CHECKOUT CONFIRMATION
+if 'confirm_checkout' not in st.session_state:
+    st.session_state['confirm_checkout'] = False
 
 params = st.query_params
 if 'uid' in params and not st.session_state.get('logged_in'):
@@ -767,7 +770,6 @@ else:
     if st.session_state['role'] not in ['System Admin', 'CEO', 'General Manager', 'Operations Manager']:
         st.sidebar.write(f"**Status:** {fresh_status}")
         
-    # 🔴 MANUAL REFRESH BUTTON FOR EVERYONE 
     if st.sidebar.button("🔄 Refresh Data", use_container_width=True, type="primary"):
         st.cache_data.clear()
         st.rerun()
@@ -1371,9 +1373,7 @@ else:
                         """
                         del_df = get_df(delivery_query)
                         if not del_df.empty:
-                            # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
                             del_df['Location Name'] = del_df.apply(lambda row: get_location_name(row['latitude'], row['longitude']), axis=1)
-                            
                             display_del_df = del_df[['Field Agent', 'Timestamp', 'Location Name']]
                             st.dataframe(display_del_df, use_container_width=True, hide_index=True)
                         else:
@@ -1455,25 +1455,39 @@ else:
                         time_remaining = expected_end_dt - now_dt
                         hours_left = int(time_remaining.total_seconds() // 3600)
                         mins_left = int((time_remaining.total_seconds() % 3600) // 60)
-                        st.warning(f"⚠️ **Warning: Shift Incomplete.** You still have {hours_left}h {mins_left}m remaining on your expected shift. Are you sure you want to request early checkout?")
+                        st.warning(f"⚠️ **Warning: Shift Incomplete.** You still have {hours_left}h {mins_left}m remaining on your expected shift.")
                     else:
                         st.success("✅ **Shift complete!** You are clear to check out, or you may remain clocked in for overtime.")
                     
-                    if st.button("🛑 REQUEST CHECKOUT", use_container_width=True, type="secondary"):
-                        request_check_out(st.session_state['user_id'], st.session_state['role'])
-                            
-                        if st.session_state['role'] == 'Driver':
-                            log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                            log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                            log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                        elif st.session_state['role'] == 'Motorbike':
-                            log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has requested to check out.")
-                        elif st.session_state['role'] == 'Worker':
-                            log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
-                                
-                        st.cache_data.clear()
-                        st.success("Checkout requested!")
-                        st.rerun()
+                    # 🔴 NEW 2-STEP CONFIRMATION UI
+                    if not st.session_state['confirm_checkout']:
+                        if st.button("🛑 REQUEST CHECKOUT", use_container_width=True, type="secondary"):
+                            st.session_state['confirm_checkout'] = True
+                            st.rerun()
+                    else:
+                        st.warning("❓ **Are you sure you want to request checkout now?**")
+                        col_y, col_n = st.columns(2)
+                        with col_y:
+                            if st.button("✔️ YES, CHECK OUT", use_container_width=True, type="primary"):
+                                request_check_out(st.session_state['user_id'], st.session_state['role'])
+                                    
+                                if st.session_state['role'] == 'Driver':
+                                    log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                                    log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                                    log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                                elif st.session_state['role'] == 'Motorbike':
+                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has requested to check out.")
+                                elif st.session_state['role'] == 'Worker':
+                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
+                                        
+                                st.session_state['confirm_checkout'] = False
+                                st.cache_data.clear()
+                                st.success("Checkout requested!")
+                                st.rerun()
+                        with col_n:
+                            if st.button("❌ NO, CANCEL", use_container_width=True):
+                                st.session_state['confirm_checkout'] = False
+                                st.rerun()
 
     # =========================================================
     # HR DASHBOARD
@@ -1526,7 +1540,6 @@ else:
 
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
                 
-                # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
                 all_df['Location Name'] = all_df.apply(lambda row: get_location_name(row['Check_In_Lat'], row['Check_In_Lon']) if pd.notna(row['Check_In_Lat']) else "---", axis=1)
                 
                 all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
@@ -1621,7 +1634,6 @@ else:
             """
             del_df = get_df(delivery_query)
             if not del_df.empty:
-                # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
                 del_df['Location Name'] = del_df.apply(lambda row: get_location_name(row['latitude'], row['longitude']), axis=1)
                 
                 display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Location Name']]
@@ -1789,7 +1801,6 @@ else:
 
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
                 
-                # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
                 all_df['Location Name'] = all_df.apply(lambda row: get_location_name(row['Check_In_Lat'], row['Check_In_Lon']) if pd.notna(row['Check_In_Lat']) else "---", axis=1)
                 
                 all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
@@ -1817,7 +1828,6 @@ else:
             """
             del_df = get_df(delivery_query)
             if not del_df.empty:
-                # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
                 del_df['Location Name'] = del_df.apply(lambda row: get_location_name(row['latitude'], row['longitude']), axis=1)
                 
                 display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Location Name']]
