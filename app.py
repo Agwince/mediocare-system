@@ -37,10 +37,57 @@ def get_connection():
     return psycopg2.connect(DB_URL)
 
 # =========================================================
-# 🔴 NEW FIX: KENYA TIMEZONE (EAT = UTC+3)
+# 🔴 KENYA TIMEZONE (EAT = UTC+3)
 # =========================================================
 def get_local_time():
     return datetime.utcnow() + timedelta(hours=3)
+
+# 🔴 THE TIME MACHINE SCRIPT (FIXES TODAY'S OLD UTC TIMES)
+def fix_old_utc_timestamps():
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        date_today = get_local_time().strftime("%Y-%m-%d")
+        cursor.execute("SELECT record_id, check_in_time, check_out_time FROM attendance WHERE date=%s", (date_today,))
+        records = cursor.fetchall()
+        for rec in records:
+            r_id, c_in, c_out = rec
+            
+            if c_in:
+                try:
+                    c_in_str = str(c_in)
+                    c_in_dt = datetime.strptime(c_in_str, "%Y-%m-%d %H:%M:%S")
+                    if c_in_dt.hour < 8: 
+                        new_in = (c_in_dt + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+                        cursor.execute("UPDATE attendance SET check_in_time=%s WHERE record_id=%s", (new_in, r_id))
+                except Exception: pass
+                    
+            if c_out:
+                try:
+                    c_out_str = str(c_out)
+                    c_out_dt = datetime.strptime(c_out_str, "%Y-%m-%d %H:%M:%S")
+                    if c_out_dt.hour < 8:
+                        new_out = (c_out_dt + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+                        cursor.execute("UPDATE attendance SET check_out_time=%s WHERE record_id=%s", (new_out, r_id))
+                except Exception: pass
+        
+        cursor.execute("SELECT delivery_id, delivery_time FROM deliveries WHERE delivery_time LIKE %s", (date_today + '%',))
+        dels = cursor.fetchall()
+        for d in dels:
+            d_id, d_time = d
+            if d_time:
+                try:
+                    d_str = str(d_time)
+                    d_dt = datetime.strptime(d_str, "%Y-%m-%d %H:%M:%S")
+                    if d_dt.hour < 8:
+                        new_d = (d_dt + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+                        cursor.execute("UPDATE deliveries SET delivery_time=%s WHERE delivery_id=%s", (new_d, d_id))
+                except Exception: pass
+
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 # --- SILENT DATABASE MIGRATION ---
 def ensure_db_updates():
@@ -48,10 +95,11 @@ def ensure_db_updates():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_hours NUMERIC DEFAULT 8.0;")
-        # Auto-approve anyone who was stuck in pending from earlier today
+        # Auto-approve anyone stuck from earlier
         cursor.execute("UPDATE attendance SET checkout_status='Approved' WHERE checkout_status LIKE 'Pending%';")
         conn.commit()
         conn.close()
+        fix_old_utc_timestamps()
     except Exception:
         pass
 
@@ -216,7 +264,7 @@ def log_attendance(user_id, lat, lon):
 def request_check_out(user_id, role):
     conn = get_connection()
     cursor = conn.cursor()
-    # 🔴 FIX: INSTANT CHECKOUT AND EXACT TIMESTAMP LOGGING
+    # 🔴 INSTANT CHECKOUT (NO APPROVAL NEEDED)
     now_str = get_local_time().strftime("%Y-%m-%d %H:%M:%S")
     date_today = get_local_time().strftime("%Y-%m-%d")
     
@@ -1129,7 +1177,7 @@ else:
 
         is_working = True
 
-        # 2. CHECKED OUT AND APPROVED
+        # 2. CHECKED OUT (INSTANTLY APPROVED)
         if checkout_status == 'Approved':
             st.success("🏁 You have completed your shift for today. Have a good evening!")
             is_working = False
@@ -1431,7 +1479,6 @@ else:
                     else:
                         st.success("✅ **Shift complete!** You are clear to check out, or you may remain clocked in for overtime.")
                     
-                    # 🔴 2-STEP CONFIRMATION FOR INSTANT CHECKOUT
                     if not st.session_state['confirm_checkout']:
                         if st.button("🛑 CHECK OUT NOW", use_container_width=True, type="secondary"):
                             st.session_state['confirm_checkout'] = True
