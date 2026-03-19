@@ -36,12 +36,20 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 def get_connection():
     return psycopg2.connect(DB_URL)
 
+# =========================================================
+# 🔴 NEW FIX: KENYA TIMEZONE (EAT = UTC+3)
+# =========================================================
+def get_local_time():
+    return datetime.utcnow() + timedelta(hours=3)
+
 # --- SILENT DATABASE MIGRATION ---
 def ensure_db_updates():
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_hours NUMERIC DEFAULT 8.0;")
+        # Auto-approve anyone who was stuck in pending from earlier today
+        cursor.execute("UPDATE attendance SET checkout_status='Approved' WHERE checkout_status LIKE 'Pending%';")
         conn.commit()
         conn.close()
     except Exception:
@@ -154,7 +162,7 @@ def get_full_user_details(user_id):
 def log_notification(sender_id, target_role, target_branch_id, target_user_id, message, file_path=None, file_name=None):
     conn = get_connection()
     cursor = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = get_local_time().strftime("%Y-%m-%d %H:%M:%S")
     s_id = sender_id if sender_id != 0 else None
     t_b_id = target_branch_id if target_branch_id != 0 else None
     cursor.execute("INSERT INTO notifications (sender_id, target_role, target_branch_id, target_user_id, message, created_at, is_read, file_path, file_name) VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s)", 
@@ -173,7 +181,7 @@ def log_meeting(branch_id, organizer, title, date_str, time_str, desc):
 def get_attendance_record(user_id):
     conn = get_connection()
     cursor = conn.cursor()
-    date_today = datetime.now().strftime("%Y-%m-%d")
+    date_today = get_local_time().strftime("%Y-%m-%d")
     cursor.execute("SELECT check_in_time, check_out_time, on_break, break_start_time, break_seconds, checkout_status, record_id, checkin_status, check_in_lat, check_in_lon FROM attendance WHERE user_id=%s AND date=%s", (user_id, date_today))
     record = cursor.fetchone()
     conn.close()
@@ -198,8 +206,8 @@ def update_performance_status(user_id):
 def log_attendance(user_id, lat, lon):
     conn = get_connection()
     cursor = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    date_today = datetime.now().strftime("%Y-%m-%d")
+    now = get_local_time().strftime("%Y-%m-%d %H:%M:%S")
+    date_today = get_local_time().strftime("%Y-%m-%d")
     cursor.execute("INSERT INTO attendance (user_id, date, check_in_time, check_in_lat, check_in_lon, checkin_status) VALUES (%s, %s, %s, %s, %s, %s)", (user_id, date_today, now, lat, lon, 'Approved'))
     conn.commit()
     conn.close()
@@ -208,23 +216,19 @@ def log_attendance(user_id, lat, lon):
 def request_check_out(user_id, role):
     conn = get_connection()
     cursor = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    date_today = datetime.now().strftime("%Y-%m-%d")
-    if role in ['Marketer', 'Driver']:
-        status = 'Pending GM'
-    elif role in ['Branch Manager', 'General Manager', 'Operations Manager', 'CEO', 'HR', 'System Admin']:
-        status = 'Approved'
-    else:
-        status = 'Pending Manager'
-    cursor.execute("UPDATE attendance SET checkout_status=%s WHERE user_id=%s AND date=%s", (status, user_id, date_today))
+    # 🔴 FIX: INSTANT CHECKOUT AND EXACT TIMESTAMP LOGGING
+    now_str = get_local_time().strftime("%Y-%m-%d %H:%M:%S")
+    date_today = get_local_time().strftime("%Y-%m-%d")
+    
+    cursor.execute("UPDATE attendance SET checkout_status='Approved', check_out_time=%s WHERE user_id=%s AND date=%s", (now_str, user_id, date_today))
     conn.commit()
     conn.close()
 
 def start_break(user_id):
     conn = get_connection()
     cursor = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    date_today = datetime.now().strftime("%Y-%m-%d")
+    now = get_local_time().strftime("%Y-%m-%d %H:%M:%S")
+    date_today = get_local_time().strftime("%Y-%m-%d")
     cursor.execute("UPDATE attendance SET on_break=1, break_start_time=%s WHERE user_id=%s AND date=%s", (now, user_id, date_today))
     conn.commit()
     conn.close()
@@ -232,10 +236,10 @@ def start_break(user_id):
 def end_break(user_id, break_start_time_str):
     conn = get_connection()
     cursor = conn.cursor()
-    now = datetime.now()
+    now = get_local_time()
     break_start = datetime.strptime(break_start_time_str, "%Y-%m-%d %H:%M:%S")
     elapsed_seconds = int((now - break_start).total_seconds())
-    date_today = datetime.now().strftime("%Y-%m-%d")
+    date_today = get_local_time().strftime("%Y-%m-%d")
     cursor.execute("UPDATE attendance SET on_break=0, break_seconds = break_seconds + %s, break_start_time=NULL WHERE user_id=%s AND date=%s", (elapsed_seconds, user_id, date_today))
     conn.commit()
     conn.close()
@@ -274,7 +278,7 @@ def get_branch_shift_hours(branch_id):
 def get_active_journey(driver_id):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT journey_id FROM driver_journeys WHERE driver_id=%s AND date=%s AND end_time IS NULL", (driver_id, datetime.now().strftime("%Y-%m-%d")))
+    cursor.execute("SELECT journey_id FROM driver_journeys WHERE driver_id=%s AND date=%s AND end_time IS NULL", (driver_id, get_local_time().strftime("%Y-%m-%d")))
     res = cursor.fetchone()
     conn.close()
     return res[0] if res else None
@@ -290,21 +294,21 @@ def get_driver_deliveries(journey_id):
 def start_journey(driver_id):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO driver_journeys (driver_id, date, start_time) VALUES (%s, %s, %s)", (driver_id, datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    cursor.execute("INSERT INTO driver_journeys (driver_id, date, start_time) VALUES (%s, %s, %s)", (driver_id, get_local_time().strftime("%Y-%m-%d"), get_local_time().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
 
 def end_journey(journey_id):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE driver_journeys SET end_time=%s WHERE journey_id=%s", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), journey_id))
+    cursor.execute("UPDATE driver_journeys SET end_time=%s WHERE journey_id=%s", (get_local_time().strftime("%Y-%m-%d %H:%M:%S"), journey_id))
     conn.commit()
     conn.close()
 
 def log_delivery(journey_id, lat, lon):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO deliveries (journey_id, delivery_time, latitude, longitude) VALUES (%s, %s, %s, %s)", (journey_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), lat, lon))
+    cursor.execute("INSERT INTO deliveries (journey_id, delivery_time, latitude, longitude) VALUES (%s, %s, %s, %s)", (journey_id, get_local_time().strftime("%Y-%m-%d %H:%M:%S"), lat, lon))
     conn.commit()
     conn.close()
 
@@ -325,14 +329,14 @@ def update_leave_status(request_id, new_status):
 def log_daily_sales(branch_id, amount):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO daily_sales (branch_id, date, total_sales) VALUES (%s, %s, %s)", (branch_id, datetime.now().strftime("%Y-%m-%d"), amount))
+    cursor.execute("INSERT INTO daily_sales (branch_id, date, total_sales) VALUES (%s, %s, %s)", (branch_id, get_local_time().strftime("%Y-%m-%d"), amount))
     conn.commit()
     conn.close()
     
 def log_expense(branch_id, amount, description):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO expenses (branch_id, date, amount, description) VALUES (%s, %s, %s, %s)", (branch_id, datetime.now().strftime("%Y-%m-%d"), amount, description))
+    cursor.execute("INSERT INTO expenses (branch_id, date, amount, description) VALUES (%s, %s, %s, %s)", (branch_id, get_local_time().strftime("%Y-%m-%d"), amount, description))
     conn.commit()
     conn.close()
 
@@ -380,8 +384,8 @@ def get_directory_df(branch_id=None):
     return df
 
 def get_monthly_attendance_ranking():
-    current_month = datetime.now().strftime("%Y-%m")
-    days_in_month_so_far = datetime.now().day
+    current_month = get_local_time().strftime("%Y-%m")
+    days_in_month_so_far = get_local_time().day
     query = f"""
         SELECT u.full_name AS "Employee", u.role AS "Role", COALESCE(b.branch_name, 'Corporate') AS "Branch",
                COUNT(DISTINCT a.date) AS "Days_Worked"
@@ -600,7 +604,6 @@ if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'logout_clicked' not in st.session_state:
     st.session_state['logout_clicked'] = False
-# 🔴 NEW: SESSION STATE FOR CHECKOUT CONFIRMATION
 if 'confirm_checkout' not in st.session_state:
     st.session_state['confirm_checkout'] = False
 
@@ -803,7 +806,7 @@ else:
                     if uploaded_file:
                         try:
                             file_name = uploaded_file.name
-                            safe_name = f"{datetime.now().strftime('%H%M%S')}_{file_name}"
+                            safe_name = f"{get_local_time().strftime('%H%M%S')}_{file_name}"
                             file_bytes = uploaded_file.getvalue()
                             supabase.storage.from_("uploads").upload(safe_name, file_bytes)
                             file_path = safe_name
@@ -843,7 +846,7 @@ else:
     if st.session_state['role'] not in ['CEO', 'System Admin']:
         with st.sidebar.expander("🏖️ Request Time Off"):
             with st.form("leave_form"):
-                start_date = st.date_input("Start Date", min_value=dt.date.today())
+                start_date = st.date_input("Start Date", min_value=get_local_time().date())
                 end_date = st.date_input("End Date", min_value=start_date)
                 reason = st.text_area("Reason for Leave")
                 if st.form_submit_button("Submit Request"):
@@ -1051,7 +1054,7 @@ else:
             st.title(f"{st.session_state['role']} Dashboard ⚙️")
             st.write("Welcome to your shift. Please check in below to begin working.")
             
-            current_weekday = datetime.now().weekday()
+            current_weekday = get_local_time().weekday()
             if current_weekday >= 5: 
                 st.warning("🌴 **Weekend / Holiday Notice:** Today is a weekend. Standard shifts are paused. Please ensure you are explicitly scheduled for overtime or weekend duty before checking in.")
             
@@ -1126,21 +1129,16 @@ else:
 
         is_working = True
 
-        # 2. CHECKED OUT AND APPROVED BY MANAGER
+        # 2. CHECKED OUT AND APPROVED
         if checkout_status == 'Approved':
             st.success("🏁 You have completed your shift for today. Have a good evening!")
             is_working = False
             
-        # 3. CHECKED OUT BUT PENDING MANAGER APPROVAL
-        elif checkout_status in ['Pending Manager', 'Pending GM']:
-            st.warning(f"⏳ Your checkout request is pending management approval. You clocked out at {check_out_time_str}.")
-            is_working = False
-            
-        # 4. ACTIVELY WORKING
+        # 3. ACTIVELY WORKING
         else:
             st.title(f"{st.session_state['role']} Workspace ⏱️")
             check_in_dt = datetime.strptime(check_in_time_str, "%Y-%m-%d %H:%M:%S")
-            now_dt = datetime.now()
+            now_dt = get_local_time()
             
             total_break_sec = break_seconds
             if on_break == 1:
@@ -1294,41 +1292,15 @@ else:
                     with col1:
                         st.write("### Today's Attendance")
                         query = "SELECT u.full_name AS \"Name\", u.phone_number AS \"Phone\", a.check_in_time AS \"Check_In\", a.on_break AS \"On_Break\", u.performance_status AS \"Status\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND u.role NOT IN ('Driver', 'Marketer') AND a.date = %s"
-                        df = get_df(query, (st.session_state['branch_id'], datetime.now().strftime("%Y-%m-%d")))
+                        df = get_df(query, (st.session_state['branch_id'], get_local_time().strftime("%Y-%m-%d")))
                         if not df.empty:
                             df['On_Break'] = df['On_Break'].apply(lambda x: '🍱 On Lunch' if x == 1 else '⚙️ Working')
                             st.dataframe(df, use_container_width=True, hide_index=True)
                         else:
                             st.info("No workers have checked in today.")
-                            
-                        st.write("---")
-                        st.write("### 🛑 Pending Checkouts")
-                        pending_out_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_out_time AS \"Check_Out_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE u.branch_id = %s AND a.checkout_status = 'Pending Manager' AND u.role NOT IN ('Driver', 'Marketer')"
-                        pending_out_df = get_df(pending_out_query, (st.session_state['branch_id'],))
-                        
-                        if not pending_out_df.empty:
-                            for _, row in pending_out_df.iterrows():
-                                col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
-                                col_p1.warning(f"**{row['Name']}** requested checkout at {row['Check_Out_Time']}")
-                                if col_p2.button("Approve", key=f"app_co_{row['Record_ID']}", type="primary"):
-                                    conn = get_connection()
-                                    conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
-                                    conn.commit()
-                                    conn.close()
-                                    st.cache_data.clear()
-                                    st.rerun()
-                                if col_p3.button("Deny", key=f"den_co_{row['Record_ID']}"):
-                                    conn = get_connection()
-                                    conn.cursor().execute("UPDATE attendance SET checkout_status='Active', check_out_time=NULL WHERE record_id=%s", (row['Record_ID'],))
-                                    conn.commit()
-                                    conn.close()
-                                    st.cache_data.clear()
-                                    st.rerun()
-                        else:
-                            st.caption("No pending checkouts.")
 
                         st.write("---")
-                        today_str = datetime.now().strftime("%Y-%m-%d")
+                        today_str = get_local_time().strftime("%Y-%m-%d")
                         sales_check = get_df("SELECT COUNT(*) FROM daily_sales WHERE branch_id=%s AND date=%s", (st.session_state['branch_id'], today_str))
                         if sales_check.iloc[0,0] == 0:
                             st.write("### 📈 End of Day Sales & Expenses")
@@ -1362,7 +1334,7 @@ else:
                             
                         st.write("---")
                         st.write("### 🚚 Local Field Activity (Motorbikes)")
-                        date_today = datetime.now().strftime("%Y-%m-%d")
+                        date_today = get_local_time().strftime("%Y-%m-%d")
                         delivery_query = f"""
                             SELECT u.full_name AS "Field Agent", d.delivery_time AS "Timestamp", d.latitude, d.longitude
                             FROM deliveries d
@@ -1383,7 +1355,7 @@ else:
                     st.write("### 📅 Schedule a Branch Meeting")
                     with st.form("meet_form"):
                         m_title = st.text_input("Meeting Title")
-                        m_date = st.date_input("Meeting Date", min_value=dt.date.today())
+                        m_date = st.date_input("Meeting Date", min_value=get_local_time().date())
                         m_time = st.time_input("Meeting Time")
                         m_desc = st.text_area("Agenda / Description")
                         if st.form_submit_button("Schedule & Notify Workers", type="primary"):
@@ -1447,7 +1419,7 @@ else:
                     branch_shift_hours = get_branch_shift_hours(st.session_state.get('branch_id'))
                     check_in_dt = datetime.strptime(check_in_time_str, "%Y-%m-%d %H:%M:%S")
                     expected_end_dt = check_in_dt + timedelta(hours=branch_shift_hours)
-                    now_dt = datetime.now()
+                    now_dt = get_local_time()
                     
                     st.info(f"📥 **Clocked In:** {check_in_time_str}\n\n🏁 **Expected Shift End:** {expected_end_dt.strftime('%Y-%m-%d %H:%M:%S')}")
                     
@@ -1459,30 +1431,30 @@ else:
                     else:
                         st.success("✅ **Shift complete!** You are clear to check out, or you may remain clocked in for overtime.")
                     
-                    # 🔴 NEW 2-STEP CONFIRMATION UI
+                    # 🔴 2-STEP CONFIRMATION FOR INSTANT CHECKOUT
                     if not st.session_state['confirm_checkout']:
-                        if st.button("🛑 REQUEST CHECKOUT", use_container_width=True, type="secondary"):
+                        if st.button("🛑 CHECK OUT NOW", use_container_width=True, type="secondary"):
                             st.session_state['confirm_checkout'] = True
                             st.rerun()
                     else:
-                        st.warning("❓ **Are you sure you want to request checkout now?**")
+                        st.warning("❓ **Are you sure you want to end your shift right now?**")
                         col_y, col_n = st.columns(2)
                         with col_y:
                             if st.button("✔️ YES, CHECK OUT", use_container_width=True, type="primary"):
                                 request_check_out(st.session_state['user_id'], st.session_state['role'])
                                     
                                 if st.session_state['role'] == 'Driver':
-                                    log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                                    log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                                    log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                                    log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out for the day.")
+                                    log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out for the day.")
+                                    log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out for the day.")
                                 elif st.session_state['role'] == 'Motorbike':
-                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has requested to check out.")
+                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has checked out for the day.")
                                 elif st.session_state['role'] == 'Worker':
-                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
+                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has checked out for the day.")
                                         
                                 st.session_state['confirm_checkout'] = False
                                 st.cache_data.clear()
-                                st.success("Checkout requested!")
+                                st.success("Successfully Checked Out!")
                                 st.rerun()
                         with col_n:
                             if st.button("❌ NO, CANCEL", use_container_width=True):
@@ -1517,7 +1489,7 @@ else:
                 
         with tab2:
             st.write("### Live Workforce Roster")
-            date_today = datetime.now().strftime("%Y-%m-%d")
+            date_today = get_local_time().strftime("%Y-%m-%d")
             all_users_query = f'''
                 SELECT u.full_name AS "Name", u.role AS "Role", COALESCE(b.branch_name, 'Corporate') AS "Branch",
                        a.check_in_time AS "Check_In_Time", a.check_out_time AS "Check_Out_Time", a.on_break AS "On_Break", a.checkout_status AS "Checkout_Status", a.checkin_status AS "Checkin_Status", a.check_in_lat AS "Check_In_Lat", a.check_in_lon AS "Check_In_Lon"
@@ -1590,40 +1562,12 @@ else:
     elif st.session_state['role'] in ["General Manager", "Operations Manager"]:
         st.title(f"{st.session_state['role']} Operations")
         
-        gm_tab1, gm_tab2, gm_tab3, gm_tab4, gm_tab5, gm_tab6, gm_tab7 = st.tabs(["🌍 Field Approvals", "💰 Daily", "🏆 Leaderboards", "📅 Calendar", "📜 Finance", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
+        gm_tab1, gm_tab2, gm_tab3, gm_tab4, gm_tab5, gm_tab6, gm_tab7 = st.tabs(["🌍 Field Activity", "💰 Daily", "🏆 Leaderboards", "📅 Calendar", "📜 Finance", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
         
         with gm_tab1:
-            st.write("### 🌍 Field Marketer & Driver Approvals")
-            st.caption("Review live GPS check-ins and approve field checkouts.")
-            
-            pending_out_query = "SELECT a.record_id AS \"Record_ID\", u.full_name AS \"Name\", a.check_out_time AS \"Check_Out_Time\" FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE a.checkout_status = 'Pending GM'"
-            pending_out_df = get_df(pending_out_query)
-            
-            if not pending_out_df.empty:
-                st.write("#### 🛑 Pending Check-Outs")
-                for _, row in pending_out_df.iterrows():
-                    col_o1, col_o2, col_o3 = st.columns([3, 1, 1])
-                    col_o1.warning(f"**{row['Name']}** requested checkout at {row['Check_Out_Time']}")
-                    if col_o2.button("Approve Out", key=f"gm_app_out_{row['Record_ID']}", type="primary"):
-                        conn = get_connection()
-                        conn.cursor().execute("UPDATE attendance SET checkout_status='Approved' WHERE record_id=%s", (row['Record_ID'],))
-                        conn.commit()
-                        conn.close()
-                        st.cache_data.clear()
-                        st.rerun()
-                    if col_o3.button("Deny", key=f"gm_den_{row['Record_ID']}"):
-                        conn = get_connection()
-                        conn.cursor().execute("UPDATE attendance SET checkout_status='Active', check_out_time=NULL WHERE record_id=%s", (row['Record_ID'],))
-                        conn.commit()
-                        conn.close()
-                        st.cache_data.clear()
-                        st.rerun()
-            else:
-                st.caption("No pending checkouts.")
-                
-            st.write("---")
             st.write("### 🚚 Live Field Activity (Drivers & Motorbikes)")
-            date_today = datetime.now().strftime("%Y-%m-%d")
+            st.caption("Live timeline of field operations.")
+            date_today = get_local_time().strftime("%Y-%m-%d")
             delivery_query = f"""
                 SELECT u.full_name AS "Field Agent", u.role AS "Role", d.delivery_time AS "Timestamp", d.latitude, d.longitude
                 FROM deliveries d
@@ -1643,7 +1587,7 @@ else:
 
         with gm_tab2:
             st.write("### Today's Branch Sales Rankings")
-            date_today = datetime.now().strftime("%Y-%m-%d")
+            date_today = get_local_time().strftime("%Y-%m-%d")
             daily_query = f"SELECT b.branch_name AS \"Branch\", SUM(ds.total_sales) AS \"Total Sales (KES)\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id WHERE ds.date = '{date_today}' GROUP BY b.branch_name ORDER BY \"Total Sales (KES)\" DESC"
             daily_df = get_df(daily_query)
             if not daily_df.empty:
@@ -1708,7 +1652,7 @@ else:
     # =========================================================
     elif st.session_state['role'] == "CEO":
         st.title("CEO Master Operations 📈")
-        date_today = datetime.now().strftime("%Y-%m-%d")
+        date_today = get_local_time().strftime("%Y-%m-%d")
         
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["📊 Data & Sales", "🚨 Live Status", "📅 History", "📢 Broadcast", "✅ Leaves", "📞 Directory", f"🔔 Inbox ({my_notif_count})", "🤖 AI Advisor"])
         
