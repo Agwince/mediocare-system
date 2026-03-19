@@ -55,7 +55,7 @@ def get_df(query, params=None):
     return df
 
 # =========================================================
-# THE BROWSER-LEVEL GPS SCRIPT
+# THE BROWSER-LEVEL GPS SCRIPT (WITH AUTO-LOGOUT FIX)
 # =========================================================
 def get_url_coords():
     try:
@@ -66,7 +66,8 @@ def get_url_coords():
         pass
     return None, None
 
-NATIVE_GPS_IFRAME = """<iframe srcdoc="<html><head><style>body{margin:0;padding:0;font-family:sans-serif;}button{background-color:#1484A6;color:white;padding:12px 20px;border:none;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%;box-shadow:0px 4px 6px rgba(0,0,0,0.1);transition:0.3s;}button:active{background-color:#0e607a;}</style></head><body><button id='btn' onclick='getLoc()'>📍 TAP HERE TO GET GPS LOCATION</button><script>function getLoc(){var btn = document.getElementById('btn');btn.innerText = '⏳ Locating... Please wait up to 30 seconds...';btn.style.backgroundColor = '#E2E8F0';btn.style.color = '#1A202C';if(navigator.geolocation){navigator.geolocation.getCurrentPosition(function(pos){var lat = pos.coords.latitude;var lon = pos.coords.longitude;var currentUrl = window.parent.location.href.split('?')[0];window.parent.location.href = currentUrl + '?lat=' + lat + '&lon=' + lon;},function(err){var msg = 'GPS Error: Ensure Location is ON, step outside, and ALLOW permissions.';if(err.code == 3){msg = 'GPS Timeout: The signal is too weak. Please step outside and try again.';}alert(msg);btn.innerText = '📍 TAP HERE TO GET GPS LOCATION';btn.style.backgroundColor = '#1484A6';btn.style.color = 'white';},{enableHighAccuracy:true, timeout:30000, maximumAge:5000});}else{alert('Geolocation not supported.');}}</script></body></html>" width="100%" height="70px" style="border:none;" allow="geolocation"></iframe>"""
+def get_gps_iframe(user_id):
+    return f"""<iframe srcdoc="<html><head><style>body{{margin:0;padding:0;font-family:sans-serif;}}button{{background-color:#1484A6;color:white;padding:12px 20px;border:none;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%;box-shadow:0px 4px 6px rgba(0,0,0,0.1);transition:0.3s;}}button:active{{background-color:#0e607a;}}</style></head><body><button id='btn' onclick='getLoc()'>📍 TAP HERE TO GET GPS LOCATION</button><script>function getLoc(){{var btn = document.getElementById('btn');btn.innerText = '⏳ Locating... Please wait up to 30 seconds...';btn.style.backgroundColor = '#E2E8F0';btn.style.color = '#1A202C';if(navigator.geolocation){{navigator.geolocation.getCurrentPosition(function(pos){{var lat = pos.coords.latitude;var lon = pos.coords.longitude;var currentUrl = window.parent.location.href.split('?')[0];window.parent.location.href = currentUrl + '?lat=' + lat + '&lon=' + lon + '&uid={user_id}';}},function(err){{var msg = 'GPS Error: Ensure Location is ON, step outside, and ALLOW permissions.';if(err.code == 3){{msg = 'GPS Timeout: The signal is too weak. Please step outside and try again.';}}alert(msg);btn.innerText = '📍 TAP HERE TO GET GPS LOCATION';btn.style.backgroundColor = '#1484A6';btn.style.color = 'white';}},{{enableHighAccuracy:true, timeout:30000, maximumAge:5000}});}}else{{alert('Geolocation not supported.');}}}}</script></body></html>" width="100%" height="70px" style="border:none;" allow="geolocation"></iframe>"""
 
 # =========================================================
 # VISIBILITY FIX
@@ -189,7 +190,6 @@ def request_check_out(user_id, role):
     elif role in ['Branch Manager', 'General Manager', 'Operations Manager', 'CEO', 'HR', 'System Admin']:
         status = 'Approved'
     else:
-        # This routes Worker and Motorbike checkout requests to the Branch Manager
         status = 'Pending Manager'
     cursor.execute("UPDATE attendance SET checkout_status=%s WHERE user_id=%s AND date=%s", (status, user_id, date_today))
     conn.commit()
@@ -441,18 +441,14 @@ def update_user_full(user_id, name, phone, password, role, branch_id):
         conn.close()
     return success, msg
 
-# 🔴 V1.1 HITLIST: THE ULTIMATE ADMIN CLEANUP 🔴
 def delete_user(user_id):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM attendance WHERE user_id=%s", (user_id,))
     cursor.execute("DELETE FROM leave_requests WHERE user_id=%s", (user_id,))
     cursor.execute("DELETE FROM billing WHERE user_id=%s", (user_id,))
-    
-    # Cascade delete driver data
     cursor.execute("DELETE FROM deliveries WHERE journey_id IN (SELECT journey_id FROM driver_journeys WHERE driver_id=%s)", (user_id,))
     cursor.execute("DELETE FROM driver_journeys WHERE driver_id=%s", (user_id,))
-    
     cursor.execute("DELETE FROM notifications WHERE sender_id=%s OR target_user_id=%s", (user_id, user_id))
     cursor.execute("DELETE FROM users WHERE user_id=%s", (user_id,))
     conn.commit()
@@ -483,7 +479,6 @@ def get_unread_count(my_role, my_branch, my_id):
     conn.close()
     return count
 
-# --- CALLBACKS TO PREVENT TAB JUMPING ---
 def cb_mark_read(notif_id):
     conn = get_connection()
     conn.cursor().execute("UPDATE notifications SET is_read=1 WHERE notif_id=%s", (notif_id,))
@@ -572,7 +567,7 @@ def render_inbox(my_role, my_branch, my_id):
                 st.warning(f"🗣️ **{row['Title']}** with {row['Organizer_Name']} | 🗓️ {row['Date']} at {row['Time']}\n\n_{row['Description']}_")
 
 # =========================================================
-# COOKIE MANAGER & SESSION STATE LOGIC
+# COOKIE MANAGER & AUTO-LOGIN FIX LOGIC
 # =========================================================
 cookie_manager = stx.CookieManager()
 
@@ -580,6 +575,22 @@ if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'logout_clicked' not in st.session_state:
     st.session_state['logout_clicked'] = False
+
+# 🔴 Auto-restore session from GPS refresh
+params = st.query_params
+if 'uid' in params and not st.session_state.get('logged_in'):
+    try:
+        url_uid = params['uid']
+        user_data = get_user_by_id(int(float(url_uid)))
+        if user_data:
+            st.session_state['logged_in'] = True
+            st.session_state['user_id'] = user_data[0]
+            st.session_state['name'] = user_data[1]
+            st.session_state['role'] = user_data[2]
+            st.session_state['branch_id'] = user_data[3]
+            st.session_state['status'] = user_data[4]
+    except Exception:
+        pass
 
 cookie_uid = cookie_manager.get(cookie="wp_user_id")
 
@@ -1008,7 +1019,6 @@ else:
             st.title(f"{st.session_state['role']} Dashboard ⚙️")
             st.write("Welcome to your shift. Please check in below to begin working.")
             
-            # 🔴 V1.1 HITLIST: WEEKEND / HOLIDAY LOGIC
             current_weekday = datetime.now().weekday()
             if current_weekday >= 5: 
                 st.warning("🌴 **Weekend / Holiday Notice:** Today is a weekend. Standard shifts are paused. Please ensure you are explicitly scheduled for overtime or weekend duty before checking in.")
@@ -1030,10 +1040,12 @@ else:
                             except: pass
                             st.rerun()
                     else:
-                        st.markdown(NATIVE_GPS_IFRAME, unsafe_allow_html=True)
+                        st.markdown(get_gps_iframe(st.session_state['user_id']), unsafe_allow_html=True)
                     
                     st.write("### 📍 Step 2: Verify on Map & Check In")
-                    m = folium.Map(location=[b_lat, b_lon], zoom_start=19)
+                    
+                    # 🔴 CLEAN MAP TILES
+                    m = folium.Map(location=[b_lat, b_lon], zoom_start=19, tiles="CartoDB positron")
                     
                     folium.Circle(location=[b_lat, b_lon], radius=50, color="blue", fill=True, fill_opacity=0.2).add_to(m)
                     
@@ -1203,14 +1215,16 @@ else:
                             except: pass
                             st.rerun()
                     else:
-                        st.markdown(NATIVE_GPS_IFRAME, unsafe_allow_html=True)
+                        st.markdown(get_gps_iframe(st.session_state['user_id']), unsafe_allow_html=True)
                     
                     if st.button("📦 Log Delivery at Current Location", use_container_width=True):
                         if d_lat and d_lon:
                             log_delivery(active_journey, d_lat, d_lon)
                             
-                            map_link = f"https://www.google.com/maps/search/?api=1&query={d_lat},{d_lon}"
-                            msg = f"📦 {st.session_state['name']} logged a delivery stop. [📍 View Location]({map_link})"
+                            # 🔴 HYBRID MAP LINKS FOR NOTIFICATIONS
+                            web_link = f"https://www.google.com/maps?q={d_lat},{d_lon}"
+                            app_link = f"https://www.google.com/maps/search/?api=1&query={d_lat},{d_lon}"
+                            msg = f"📦 {st.session_state['name']} logged a delivery stop.\n\n[🌍 Open in Web Browser]({web_link})\n[📱 Open in Android App]({app_link})"
                             
                             if st.session_state['role'] == 'Motorbike':
                                 log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, msg)
@@ -1228,13 +1242,13 @@ else:
                         else:
                             st.error("Click the blue button above to get your location first!")
                     
-                    # 🔴 V1.1 HITLIST: DRIVER LOCATION TIMESTAMPS
                     st.write("---")
                     st.write("### 📜 Today's Delivery Log")
                     deliveries = get_driver_deliveries(active_journey)
                     if deliveries:
                         for d in deliveries:
-                            st.info(f"✅ **Delivered at {d[0]}** | [📍 View Exact Location](https://www.google.com/maps/search/?api=1&query={d[1]},{d[2]})")
+                            # 🔴 HYBRID MAP LINKS FOR LOG
+                            st.info(f"✅ **Delivered at {d[0]}**\n\n[🌍 Web Map](https://www.google.com/maps?q={d[1]},{d[2]}) | [📱 App Map](https://www.google.com/maps/search/?api=1&query={d[1]},{d[2]})")
                     else:
                         st.caption("No deliveries logged yet on this journey.")
                             
@@ -1326,6 +1340,36 @@ else:
                         else:
                             st.write("No recent alerts.")
                             
+                        st.write("---")
+                        st.write("### 🚚 Local Field Activity (Motorbikes)")
+                        date_today = datetime.now().strftime("%Y-%m-%d")
+                        delivery_query = f"""
+                            SELECT u.full_name AS "Field Agent", d.delivery_time AS "Timestamp", d.latitude, d.longitude
+                            FROM deliveries d
+                            JOIN driver_journeys dj ON d.journey_id = dj.journey_id
+                            JOIN users u ON dj.driver_id = u.user_id
+                            WHERE dj.date = '{date_today}' AND u.branch_id = {st.session_state['branch_id']}
+                            ORDER BY d.delivery_time DESC
+                        """
+                        del_df = get_df(delivery_query)
+                        if not del_df.empty:
+                            # 🔴 HYBRID MAP LINKS FOR DATAFRAME
+                            del_df['Web Map'] = del_df.apply(lambda row: f"https://www.google.com/maps?q={row['latitude']},{row['longitude']}", axis=1)
+                            del_df['App Map'] = del_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['latitude']},{row['longitude']}", axis=1)
+                            
+                            display_del_df = del_df[['Field Agent', 'Timestamp', 'Web Map', 'App Map']]
+                            st.dataframe(
+                                display_del_df, 
+                                use_container_width=True, 
+                                hide_index=True, 
+                                column_config={
+                                    "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
+                                    "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
+                                }
+                            )
+                        else:
+                            st.caption("No motorbike deliveries logged today.")
+                            
                 with tab2:
                     st.write("### 📅 Schedule a Branch Meeting")
                     with st.form("meet_form"):
@@ -1385,7 +1429,6 @@ else:
                     else:
                         st.info("No active employees found.")
 
-            # 🔴 V1.1 HITLIST: STRICT SHIFT GUARDRAILS & TIMESTAMPS 🔴
             if is_working:
                 st.write("---")
                 col_c1, col_c2, col_c3 = st.columns([1, 2, 1])
@@ -1403,25 +1446,25 @@ else:
                         time_remaining = expected_end_dt - now_dt
                         hours_left = int(time_remaining.total_seconds() // 3600)
                         mins_left = int((time_remaining.total_seconds() % 3600) // 60)
-                        st.error(f"⚠️ **Shift Incomplete.** You still have {hours_left}h {mins_left}m remaining on your shift. Early checkout is locked by administration.")
-                        st.button("🛑 REQUEST CHECKOUT", use_container_width=True, disabled=True)
+                        st.warning(f"⚠️ **Warning: Shift Incomplete.** You still have {hours_left}h {mins_left}m remaining on your expected shift. Are you sure you want to request early checkout?")
                     else:
                         st.success("✅ **Shift complete!** You are clear to check out, or you may remain clocked in for overtime.")
-                        if st.button("🛑 REQUEST CHECKOUT", use_container_width=True, type="secondary"):
-                            request_check_out(st.session_state['user_id'], st.session_state['role'])
+                    
+                    if st.button("🛑 REQUEST CHECKOUT", use_container_width=True, type="secondary"):
+                        request_check_out(st.session_state['user_id'], st.session_state['role'])
+                            
+                        if st.session_state['role'] == 'Driver':
+                            log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                            log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                            log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
+                        elif st.session_state['role'] == 'Motorbike':
+                            log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has requested to check out.")
+                        elif st.session_state['role'] == 'Worker':
+                            log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
                                 
-                            if st.session_state['role'] == 'Driver':
-                                log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                                log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                                log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has requested to check out.")
-                            elif st.session_state['role'] == 'Motorbike':
-                                log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has requested to check out.")
-                            elif st.session_state['role'] == 'Worker':
-                                log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has requested to check out.")
-                                    
-                            st.cache_data.clear()
-                            st.success("Checkout requested!")
-                            st.rerun()
+                        st.cache_data.clear()
+                        st.success("Checkout requested!")
+                        st.rerun()
 
     # =========================================================
     # HR DASHBOARD
@@ -1471,15 +1514,17 @@ else:
                         if row['Checkout_Status'] in ['Pending Manager', 'Pending GM']: return "⏳ Pending Checkout"
                     if row['On_Break'] == 1: return "🍱 On Lunch"
                     return "🟢 Working Active"
-                
-                def get_loc_link(row):
-                    if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
-                        return f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}"
-                    return None
 
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
-                all_df['Location'] = all_df.apply(get_loc_link, axis=1)
-                display_df = all_df[['Name', 'Role', 'Branch', 'Live Status', 'Location']]
+                
+                # 🔴 HYBRID MAP LINKS FOR DATAFRAME
+                all_df['Web Map'] = all_df.apply(lambda row: f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}" if pd.notna(row['Check_In_Lat']) else None, axis=1)
+                all_df['App Map'] = all_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}" if pd.notna(row['Check_In_Lat']) else None, axis=1)
+                
+                all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
+                all_df['Time Out'] = all_df['Check_Out_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else "---")
+                
+                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Live Status', 'Web Map', 'App Map']]
                 
                 search_hr_roster = st.text_input("🔍 Search Roster...", key="hr_roster_search")
                 if search_hr_roster:
@@ -1489,7 +1534,10 @@ else:
                     display_df, 
                     use_container_width=True, 
                     hide_index=True,
-                    column_config={"Location": st.column_config.LinkColumn("GPS Map", display_text="🌍 TAP TO OPEN MAP")}
+                    column_config={
+                        "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
+                        "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
+                    }
                 )
             else:
                 st.info("No employees found in system.")
@@ -1559,6 +1607,36 @@ else:
                         st.rerun()
             else:
                 st.caption("No pending checkouts.")
+                
+            st.write("---")
+            st.write("### 🚚 Live Field Activity (Drivers & Motorbikes)")
+            date_today = datetime.now().strftime("%Y-%m-%d")
+            delivery_query = f"""
+                SELECT u.full_name AS "Field Agent", u.role AS "Role", d.delivery_time AS "Timestamp", d.latitude, d.longitude
+                FROM deliveries d
+                JOIN driver_journeys dj ON d.journey_id = dj.journey_id
+                JOIN users u ON dj.driver_id = u.user_id
+                WHERE dj.date = '{date_today}'
+                ORDER BY d.delivery_time DESC
+            """
+            del_df = get_df(delivery_query)
+            if not del_df.empty:
+                # 🔴 HYBRID MAP LINKS FOR DATAFRAME
+                del_df['Web Map'] = del_df.apply(lambda row: f"https://www.google.com/maps?q={row['latitude']},{row['longitude']}", axis=1)
+                del_df['App Map'] = del_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['latitude']},{row['longitude']}", axis=1)
+                
+                display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Web Map', 'App Map']]
+                st.dataframe(
+                    display_del_df, 
+                    use_container_width=True, 
+                    hide_index=True, 
+                    column_config={
+                        "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
+                        "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
+                    }
+                )
+            else:
+                st.caption("No deliveries logged in the field today.")
 
         with gm_tab2:
             st.write("### Today's Branch Sales Rankings")
@@ -1717,15 +1795,17 @@ else:
                         if row['Checkout_Status'] in ['Pending Manager', 'Pending GM']: return "⏳ Pending Checkout"
                     if row['On_Break'] == 1: return "🍱 On Lunch"
                     return "🟢 Working Active"
-                
-                def get_loc_link(row):
-                    if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
-                        return f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}"
-                    return None
 
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
-                all_df['Location'] = all_df.apply(get_loc_link, axis=1)
-                display_df = all_df[['Name', 'Role', 'Branch', 'Live Status', 'Location']]
+                
+                # 🔴 HYBRID MAP LINKS FOR DATAFRAME
+                all_df['Web Map'] = all_df.apply(lambda row: f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}" if pd.notna(row['Check_In_Lat']) else None, axis=1)
+                all_df['App Map'] = all_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}" if pd.notna(row['Check_In_Lat']) else None, axis=1)
+                
+                all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
+                all_df['Time Out'] = all_df['Check_Out_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else "---")
+                
+                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Live Status', 'Web Map', 'App Map']]
                 
                 search_ceo_roster = st.text_input("🔍 Search Roster...", key="ceo_roster_search")
                 if search_ceo_roster:
@@ -1735,10 +1815,42 @@ else:
                     display_df, 
                     use_container_width=True, 
                     hide_index=True,
-                    column_config={"Location": st.column_config.LinkColumn("GPS Map", display_text="🌍 TAP TO OPEN MAP")}
+                    column_config={
+                        "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
+                        "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
+                    }
                 )
             else:
                 st.info("No employees found in system.")
+                
+            st.write("---")
+            st.write("### 🚚 Live Field Activity (Drivers & Motorbikes)")
+            delivery_query = f"""
+                SELECT u.full_name AS "Field Agent", u.role AS "Role", d.delivery_time AS "Timestamp", d.latitude, d.longitude
+                FROM deliveries d
+                JOIN driver_journeys dj ON d.journey_id = dj.journey_id
+                JOIN users u ON dj.driver_id = u.user_id
+                WHERE dj.date = '{date_today}'
+                ORDER BY d.delivery_time DESC
+            """
+            del_df = get_df(delivery_query)
+            if not del_df.empty:
+                # 🔴 HYBRID MAP LINKS FOR DATAFRAME
+                del_df['Web Map'] = del_df.apply(lambda row: f"https://www.google.com/maps?q={row['latitude']},{row['longitude']}", axis=1)
+                del_df['App Map'] = del_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['latitude']},{row['longitude']}", axis=1)
+                
+                display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Web Map', 'App Map']]
+                st.dataframe(
+                    display_del_df, 
+                    use_container_width=True, 
+                    hide_index=True, 
+                    column_config={
+                        "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
+                        "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
+                    }
+                )
+            else:
+                st.caption("No deliveries logged in the field today.")
 
         with tab3:
             st.write("### 🏆 Monthly Attendance Ranking")
