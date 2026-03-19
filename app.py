@@ -9,6 +9,8 @@ import os
 import extra_streamlit_components as stx
 import time
 import math
+import urllib.request
+import json
 from supabase import create_client
 import streamlit.components.v1 as components
 
@@ -55,7 +57,30 @@ def get_df(query, params=None):
     return df
 
 # =========================================================
-# THE BROWSER-LEVEL GPS SCRIPT (WITH AUTO-LOGOUT FIX)
+# REVERSE GEOCODING (CONVERTS GPS TO STREET NAME)
+# =========================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_location_name(lat, lon):
+    if pd.isna(lat) or pd.isna(lon) or lat == 0.0 or lon == 0.0:
+        return "---"
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=14"
+        req = urllib.request.Request(url, headers={'User-Agent': 'WorkPulseApp/1.0'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode())
+            if 'address' in data:
+                addr = data['address']
+                city = addr.get('city', addr.get('town', addr.get('village', addr.get('county', 'Unknown Area'))))
+                road = addr.get('road', '')
+                if road:
+                    return f"{road}, {city}"
+                return city
+            return f"Lat {lat:.4f}, Lon {lon:.4f}"
+    except Exception:
+        return f"Lat {lat:.4f}, Lon {lon:.4f}"
+
+# =========================================================
+# THE BROWSER-LEVEL GPS SCRIPT
 # =========================================================
 def get_url_coords():
     try:
@@ -576,7 +601,6 @@ if 'logged_in' not in st.session_state:
 if 'logout_clicked' not in st.session_state:
     st.session_state['logout_clicked'] = False
 
-# 🔴 Auto-restore session from GPS refresh
 params = st.query_params
 if 'uid' in params and not st.session_state.get('logged_in'):
     try:
@@ -742,6 +766,12 @@ else:
     
     if st.session_state['role'] not in ['System Admin', 'CEO', 'General Manager', 'Operations Manager']:
         st.sidebar.write(f"**Status:** {fresh_status}")
+        
+    # 🔴 MANUAL REFRESH BUTTON FOR EVERYONE 
+    if st.sidebar.button("🔄 Refresh Data", use_container_width=True, type="primary"):
+        st.cache_data.clear()
+        st.rerun()
+        
     st.sidebar.write("---")
 
     if st.session_state['role'] != 'System Admin':
@@ -1035,16 +1065,10 @@ else:
                     
                     if worker_lat and worker_lon:
                         st.success("✅ GPS Coordinates Locked! You may now press Check In.")
-                        if st.button("🔄 Re-Scan Location", type="secondary"):
-                            try: st.query_params.clear()
-                            except: pass
-                            st.rerun()
                     else:
                         st.markdown(get_gps_iframe(st.session_state['user_id']), unsafe_allow_html=True)
                     
                     st.write("### 📍 Step 2: Verify on Map & Check In")
-                    
-                    # 🔴 CLEAN MAP TILES
                     m = folium.Map(location=[b_lat, b_lon], zoom_start=19, tiles="CartoDB positron")
                     
                     folium.Circle(location=[b_lat, b_lon], radius=50, color="blue", fill=True, fill_opacity=0.2).add_to(m)
@@ -1210,21 +1234,15 @@ else:
                     
                     if d_lat and d_lon:
                         st.success("✅ Delivery Location Locked!")
-                        if st.button("🔄 Re-Scan Location", key="driver_rescan"):
-                            try: st.query_params.clear()
-                            except: pass
-                            st.rerun()
                     else:
                         st.markdown(get_gps_iframe(st.session_state['user_id']), unsafe_allow_html=True)
                     
                     if st.button("📦 Log Delivery at Current Location", use_container_width=True):
                         if d_lat and d_lon:
                             log_delivery(active_journey, d_lat, d_lon)
+                            loc_name = get_location_name(d_lat, d_lon)
                             
-                            # 🔴 HYBRID MAP LINKS FOR NOTIFICATIONS
-                            web_link = f"https://www.google.com/maps?q={d_lat},{d_lon}"
-                            app_link = f"https://www.google.com/maps/search/?api=1&query={d_lat},{d_lon}"
-                            msg = f"📦 {st.session_state['name']} logged a delivery stop.\n\n[🌍 Open in Web Browser]({web_link})\n[📱 Open in Android App]({app_link})"
+                            msg = f"📦 {st.session_state['name']} logged a delivery stop at: **{loc_name}**"
                             
                             if st.session_state['role'] == 'Motorbike':
                                 log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, msg)
@@ -1247,8 +1265,8 @@ else:
                     deliveries = get_driver_deliveries(active_journey)
                     if deliveries:
                         for d in deliveries:
-                            # 🔴 HYBRID MAP LINKS FOR LOG
-                            st.info(f"✅ **Delivered at {d[0]}**\n\n[🌍 Web Map](https://www.google.com/maps?q={d[1]},{d[2]}) | [📱 App Map](https://www.google.com/maps/search/?api=1&query={d[1]},{d[2]})")
+                            loc_name = get_location_name(d[1], d[2])
+                            st.info(f"✅ **Delivered at {d[0]}**\n\n📍 Location: {loc_name}")
                     else:
                         st.caption("No deliveries logged yet on this journey.")
                             
@@ -1353,20 +1371,11 @@ else:
                         """
                         del_df = get_df(delivery_query)
                         if not del_df.empty:
-                            # 🔴 HYBRID MAP LINKS FOR DATAFRAME
-                            del_df['Web Map'] = del_df.apply(lambda row: f"https://www.google.com/maps?q={row['latitude']},{row['longitude']}", axis=1)
-                            del_df['App Map'] = del_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['latitude']},{row['longitude']}", axis=1)
+                            # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
+                            del_df['Location Name'] = del_df.apply(lambda row: get_location_name(row['latitude'], row['longitude']), axis=1)
                             
-                            display_del_df = del_df[['Field Agent', 'Timestamp', 'Web Map', 'App Map']]
-                            st.dataframe(
-                                display_del_df, 
-                                use_container_width=True, 
-                                hide_index=True, 
-                                column_config={
-                                    "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
-                                    "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
-                                }
-                            )
+                            display_del_df = del_df[['Field Agent', 'Timestamp', 'Location Name']]
+                            st.dataframe(display_del_df, use_container_width=True, hide_index=True)
                         else:
                             st.caption("No motorbike deliveries logged today.")
                             
@@ -1517,28 +1526,19 @@ else:
 
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
                 
-                # 🔴 HYBRID MAP LINKS FOR DATAFRAME
-                all_df['Web Map'] = all_df.apply(lambda row: f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}" if pd.notna(row['Check_In_Lat']) else None, axis=1)
-                all_df['App Map'] = all_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}" if pd.notna(row['Check_In_Lat']) else None, axis=1)
+                # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
+                all_df['Location Name'] = all_df.apply(lambda row: get_location_name(row['Check_In_Lat'], row['Check_In_Lon']) if pd.notna(row['Check_In_Lat']) else "---", axis=1)
                 
                 all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
                 all_df['Time Out'] = all_df['Check_Out_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else "---")
                 
-                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Live Status', 'Web Map', 'App Map']]
+                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Live Status', 'Location Name']]
                 
                 search_hr_roster = st.text_input("🔍 Search Roster...", key="hr_roster_search")
                 if search_hr_roster:
                     display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_hr_roster, case=False, na=False)).any(axis=1)]
                 
-                st.dataframe(
-                    display_df, 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={
-                        "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
-                        "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
-                    }
-                )
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
             else:
                 st.info("No employees found in system.")
                 
@@ -1621,20 +1621,11 @@ else:
             """
             del_df = get_df(delivery_query)
             if not del_df.empty:
-                # 🔴 HYBRID MAP LINKS FOR DATAFRAME
-                del_df['Web Map'] = del_df.apply(lambda row: f"https://www.google.com/maps?q={row['latitude']},{row['longitude']}", axis=1)
-                del_df['App Map'] = del_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['latitude']},{row['longitude']}", axis=1)
+                # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
+                del_df['Location Name'] = del_df.apply(lambda row: get_location_name(row['latitude'], row['longitude']), axis=1)
                 
-                display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Web Map', 'App Map']]
-                st.dataframe(
-                    display_del_df, 
-                    use_container_width=True, 
-                    hide_index=True, 
-                    column_config={
-                        "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
-                        "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
-                    }
-                )
+                display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Location Name']]
+                st.dataframe(display_del_df, use_container_width=True, hide_index=True)
             else:
                 st.caption("No deliveries logged in the field today.")
 
@@ -1798,28 +1789,19 @@ else:
 
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
                 
-                # 🔴 HYBRID MAP LINKS FOR DATAFRAME
-                all_df['Web Map'] = all_df.apply(lambda row: f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}" if pd.notna(row['Check_In_Lat']) else None, axis=1)
-                all_df['App Map'] = all_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['Check_In_Lat']},{row['Check_In_Lon']}" if pd.notna(row['Check_In_Lat']) else None, axis=1)
+                # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
+                all_df['Location Name'] = all_df.apply(lambda row: get_location_name(row['Check_In_Lat'], row['Check_In_Lon']) if pd.notna(row['Check_In_Lat']) else "---", axis=1)
                 
                 all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
                 all_df['Time Out'] = all_df['Check_Out_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else "---")
                 
-                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Live Status', 'Web Map', 'App Map']]
+                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Live Status', 'Location Name']]
                 
                 search_ceo_roster = st.text_input("🔍 Search Roster...", key="ceo_roster_search")
                 if search_ceo_roster:
                     display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_ceo_roster, case=False, na=False)).any(axis=1)]
                 
-                st.dataframe(
-                    display_df, 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={
-                        "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
-                        "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
-                    }
-                )
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
             else:
                 st.info("No employees found in system.")
                 
@@ -1835,20 +1817,11 @@ else:
             """
             del_df = get_df(delivery_query)
             if not del_df.empty:
-                # 🔴 HYBRID MAP LINKS FOR DATAFRAME
-                del_df['Web Map'] = del_df.apply(lambda row: f"https://www.google.com/maps?q={row['latitude']},{row['longitude']}", axis=1)
-                del_df['App Map'] = del_df.apply(lambda row: f"https://www.google.com/maps/search/?api=1&query={row['latitude']},{row['longitude']}", axis=1)
+                # 🔴 NO MAP LINKS: USES TEXT LOCATION NOW
+                del_df['Location Name'] = del_df.apply(lambda row: get_location_name(row['latitude'], row['longitude']), axis=1)
                 
-                display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Web Map', 'App Map']]
-                st.dataframe(
-                    display_del_df, 
-                    use_container_width=True, 
-                    hide_index=True, 
-                    column_config={
-                        "Web Map": st.column_config.LinkColumn("Web Map", display_text="🌍 Web"),
-                        "App Map": st.column_config.LinkColumn("App Map", display_text="📱 App")
-                    }
-                )
+                display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Location Name']]
+                st.dataframe(display_del_df, use_container_width=True, hide_index=True)
             else:
                 st.caption("No deliveries logged in the field today.")
 
