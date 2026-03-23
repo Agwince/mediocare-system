@@ -42,7 +42,7 @@ def get_connection():
 def get_local_time():
     return datetime.utcnow() + timedelta(hours=3)
 
-# 🔴 THE TIME MACHINE SCRIPT (FIXES TODAY'S OLD UTC TIMES)
+# 🔴 THE TIME MACHINE SCRIPT (DISABLED TO PREVENT MORNING BUGS)
 def fix_old_utc_timestamps():
     try:
         conn = get_connection()
@@ -99,7 +99,8 @@ def ensure_db_updates():
         cursor.execute("UPDATE attendance SET checkout_status='Approved' WHERE checkout_status LIKE 'Pending%';")
         conn.commit()
         conn.close()
-        fix_old_utc_timestamps()
+        # 🔴 DISABLED: fix_old_utc_timestamps() was adding 3 hours to early morning check-ins and breaking the system.
+        # fix_old_utc_timestamps() 
     except Exception:
         pass
 
@@ -739,7 +740,7 @@ if not st.session_state['logged_in']:
             const passwordInput = inputs[1];
             parentDoc.addEventListener('mousemove', (e) => {
                 if (parentDoc.activeElement === passwordInput) return; 
-                pupils.forEach(pupil => {
+                pupil.forEach(pupil => {
                     const rect = pupil.getBoundingClientRect();
                     const x = Math.max(-6, Math.min(6, (e.clientX - rect.left) / 30));
                     const y = Math.max(-6, Math.min(6, (e.clientY - rect.top) / 30));
@@ -979,10 +980,10 @@ else:
                                 time.sleep(1)
                                 st.rerun()
                         
-                st.write("---")
-                st.dataframe(branches_df, hide_index=True, use_container_width=True)
-            else:
-                st.info("No branches currently exist.")
+            st.write("---")
+            st.dataframe(branches_df, hide_index=True, use_container_width=True)
+        else:
+            st.info("No branches currently exist.")
 
         with tab2:
             st.write("### Register a New Employee")
@@ -1210,7 +1211,10 @@ else:
                 st.stop() 
             
             else:
-                worked_seconds = (now_dt - check_in_dt).total_seconds() - total_break_sec
+                # 1. FIX: Use max() to ensure worked_seconds can NEVER drop below zero
+                raw_worked_seconds = (now_dt - check_in_dt).total_seconds() - total_break_sec
+                worked_seconds = max(0.0, float(raw_worked_seconds))
+                
                 hours = int(worked_seconds // 3600)
                 minutes = int((worked_seconds % 3600) // 60)
                 
@@ -1219,8 +1223,11 @@ else:
                     branch_shift_hours = get_branch_shift_hours(st.session_state.get('branch_id'))
                     shift_target_seconds = branch_shift_hours * 3600
                     
-                    progress = min(worked_seconds / shift_target_seconds, 1.0)
-                    st.progress(progress)
+                    # 2. FIX: Safely calculate progress and clamp it strictly between 0.0 and 1.0
+                    raw_progress = worked_seconds / shift_target_seconds if shift_target_seconds > 0 else 0.0
+                    safe_progress = max(0.0, min(1.0, float(raw_progress)))
+                    
+                    st.progress(safe_progress)
                     st.caption(f"**Active Time Worked:** {hours} Hours, {minutes} Minutes (Shift Goal: {branch_shift_hours} Hours)")
                 with col2:
                     if break_seconds < 3600:
