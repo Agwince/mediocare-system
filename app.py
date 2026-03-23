@@ -99,8 +99,7 @@ def ensure_db_updates():
         cursor.execute("UPDATE attendance SET checkout_status='Approved' WHERE checkout_status LIKE 'Pending%';")
         conn.commit()
         conn.close()
-        # 🔴 DISABLED: fix_old_utc_timestamps() was adding 3 hours to early morning check-ins and breaking the system.
-        # fix_old_utc_timestamps() 
+        # fix_old_utc_timestamps()
     except Exception:
         pass
 
@@ -978,10 +977,10 @@ else:
                                 time.sleep(1)
                                 st.rerun()
                         
-                    st.write("---")
-                 st.dataframe(branches_df, hide_index=True, use_container_width=True)
-             else:
-                 st.info("No branches currently exist.")
+            st.write("---")
+            st.dataframe(branches_df, hide_index=True, use_container_width=True)
+        else:
+            st.info("No branches currently exist.")
 
         with tab2:
             st.write("### Register a New Employee")
