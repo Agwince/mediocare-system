@@ -95,12 +95,9 @@ def ensure_db_updates():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_hours NUMERIC DEFAULT 8.0;")
-        # Auto-approve anyone stuck from earlier
         cursor.execute("UPDATE attendance SET checkout_status='Approved' WHERE checkout_status LIKE 'Pending%';")
         conn.commit()
         conn.close()
-        # 🔴 DISABLED: fix_old_utc_timestamps() was adding 3 hours to early morning check-ins and breaking the system.
-        # fix_old_utc_timestamps() 
     except Exception:
         pass
 
@@ -265,10 +262,8 @@ def log_attendance(user_id, lat, lon):
 def request_check_out(user_id, role):
     conn = get_connection()
     cursor = conn.cursor()
-    # 🔴 INSTANT CHECKOUT (NO APPROVAL NEEDED)
     now_str = get_local_time().strftime("%Y-%m-%d %H:%M:%S")
     date_today = get_local_time().strftime("%Y-%m-%d")
-    
     cursor.execute("UPDATE attendance SET checkout_status='Approved', check_out_time=%s WHERE user_id=%s AND date=%s", (now_str, user_id, date_today))
     conn.commit()
     conn.close()
