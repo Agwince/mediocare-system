@@ -977,10 +977,12 @@ else:
                                 st.success(f"{current_name} deleted successfully!")
                                 time.sleep(1)
                                 st.rerun()
-                        st.write("---")
-                st.dataframe(branches_df, hide_index=True, use_container_width=True)
-            else:
-                st.info("No branches currently exist.")
+                        
+            st.write("---")
+            st.dataframe(branches_df, hide_index=True, use_container_width=True)
+        else:
+            st.info("No branches currently exist.")
+
         with tab2:
             st.write("### Register a New Employee")
             branches_df = get_all_branches_df()
@@ -1693,6 +1695,7 @@ else:
         
         with gm_tab7:
             render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
+
 
     # =========================================================
     # CEO DASHBOARD 
