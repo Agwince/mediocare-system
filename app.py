@@ -95,9 +95,12 @@ def ensure_db_updates():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_hours NUMERIC DEFAULT 8.0;")
+        # Auto-approve anyone stuck from earlier
         cursor.execute("UPDATE attendance SET checkout_status='Approved' WHERE checkout_status LIKE 'Pending%';")
         conn.commit()
         conn.close()
+        # 🔴 DISABLED: fix_old_utc_timestamps() was adding 3 hours to early morning check-ins and breaking the system.
+        # fix_old_utc_timestamps() 
     except Exception:
         pass
 
@@ -1692,7 +1695,6 @@ else:
         
         with gm_tab7:
             render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
-
 
     # =========================================================
     # CEO DASHBOARD 
