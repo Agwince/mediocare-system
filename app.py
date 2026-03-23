@@ -977,10 +977,10 @@ else:
                                 time.sleep(1)
                                 st.rerun()
                         
-            st.write("---")
-            st.dataframe(branches_df, hide_index=True, use_container_width=True)
-        else:
-            st.info("No branches currently exist.")
+                st.write("---")
+                st.dataframe(branches_df, hide_index=True, use_container_width=True)
+            else:
+                st.info("No branches currently exist.")
 
         with tab2:
             st.write("### Register a New Employee")
