@@ -740,7 +740,7 @@ if not st.session_state['logged_in']:
             const passwordInput = inputs[1];
             parentDoc.addEventListener('mousemove', (e) => {
                 if (parentDoc.activeElement === passwordInput) return; 
-                pupil.forEach(pupil => {
+                pupils.forEach(pupil => {
                     const rect = pupil.getBoundingClientRect();
                     const x = Math.max(-6, Math.min(6, (e.clientX - rect.left) / 30));
                     const y = Math.max(-6, Math.min(6, (e.clientY - rect.top) / 30));
@@ -1211,7 +1211,6 @@ else:
                 st.stop() 
             
             else:
-                # 1. FIX: Use max() to ensure worked_seconds can NEVER drop below zero
                 raw_worked_seconds = (now_dt - check_in_dt).total_seconds() - total_break_sec
                 worked_seconds = max(0.0, float(raw_worked_seconds))
                 
@@ -1223,7 +1222,6 @@ else:
                     branch_shift_hours = get_branch_shift_hours(st.session_state.get('branch_id'))
                     shift_target_seconds = branch_shift_hours * 3600
                     
-                    # 2. FIX: Safely calculate progress and clamp it strictly between 0.0 and 1.0
                     raw_progress = worked_seconds / shift_target_seconds if shift_target_seconds > 0 else 0.0
                     safe_progress = max(0.0, min(1.0, float(raw_progress)))
                     
