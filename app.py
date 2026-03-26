@@ -120,24 +120,30 @@ def calculate_hours_worked(row, is_history=False):
         return "---"
 
 # =========================================================
-# REVERSE GEOCODING (CONVERTS GPS TO STREET NAME)
+# REVERSE GEOCODING (CONVERTS GPS TO STREET NAME) - FIXED FOR RATE LIMITS
 # =========================================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_location_name(lat, lon):
     if pd.isna(lat) or pd.isna(lon) or lat == 0.0 or lon == 0.0:
         return "---"
     try:
-        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=14"
-        req = urllib.request.Request(url, headers={'User-Agent': 'WorkPulseApp/1.0'})
-        with urllib.request.urlopen(req, timeout=3) as response:
+        # Pause briefly to prevent the free API from blocking us for spamming requests
+        time.sleep(0.3) 
+        
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+        req = urllib.request.Request(url, headers={'User-Agent': 'WorkPulse_Enterprise_App_v1.5'})
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
             if 'address' in data:
                 addr = data['address']
-                city = addr.get('city', addr.get('town', addr.get('village', addr.get('county', 'Unknown Area'))))
-                road = addr.get('road', '')
-                if road:
-                    return f"{road}, {city}"
-                return city
+                street = addr.get('road', addr.get('pedestrian', ''))
+                area = addr.get('suburb', addr.get('neighbourhood', addr.get('village', '')))
+                city = addr.get('city', addr.get('town', addr.get('county', '')))
+                
+                parts = [p for p in [street, area, city] if p]
+                if parts:
+                    return ", ".join(parts[:2])
             return f"Lat {lat:.4f}, Lon {lon:.4f}"
     except Exception:
         return f"Lat {lat:.4f}, Lon {lon:.4f}"
@@ -1348,7 +1354,7 @@ else:
                 if m_lat and m_lon:
                     st.success("✅ Current Location Locked!")
                 else:
-                    st.markdown(get_gps_iframe(f"loc_{st.session_state['user_id']}"), unsafe_allow_html=True)
+                    st.markdown(get_gps_iframe(st.session_state['user_id']), unsafe_allow_html=True)
                     
                 if st.button("📍 Submit Location Updates", use_container_width=True):
                     if m_lat and m_lon:
@@ -1653,11 +1659,12 @@ else:
                             return "🟢 Working Active"
                         
                         all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
+                        all_df['Location Name'] = all_df.apply(lambda row: get_location_name(row['Check_In_Lat'], row['Check_In_Lon']) if pd.notna(row['Check_In_Lat']) else "---", axis=1)
                         all_df['Hours Worked'] = all_df.apply(lambda row: calculate_hours_worked(row, is_history=False), axis=1)
                         all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
                         all_df['Time Out'] = all_df['Check_Out_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else "---")
                         
-                        display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Hours Worked', 'Live Status']]
+                        display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Hours Worked', 'Live Status', 'Location Name']]
                         
                         search_acc_roster = st.text_input("🔍 Search Roster...", key="acc_roster_search")
                         if search_acc_roster:
@@ -1793,8 +1800,8 @@ else:
                             return "🟢 Working Active"
                         
                         all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
-                        all_df['Hours Worked'] = all_df.apply(lambda row: calculate_hours_worked(row, is_history=False), axis=1)
                         all_df['Location Name'] = all_df.apply(lambda row: get_location_name(row['Check_In_Lat'], row['Check_In_Lon']) if pd.notna(row['Check_In_Lat']) else "---", axis=1)
+                        all_df['Hours Worked'] = all_df.apply(lambda row: calculate_hours_worked(row, is_history=False), axis=1)
                         all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
                         all_df['Time Out'] = all_df['Check_Out_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else "---")
                         
