@@ -2178,30 +2178,20 @@ else:
                     if row['On_Break'] == 1: return "🍱 On Lunch"
                     if row['Is_Overtime'] == 1: return "🔥 Working (Overtime)"
                     return "🟢 Working Active"
-                
-                def get_loc_link(row):
-                    if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
-                        return f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}"
-                    return None
 
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
-                all_df['Location'] = all_df.apply(get_loc_link, axis=1)
+                all_df['Location Name'] = all_df.apply(lambda row: get_location_name(row['Check_In_Lat'], row['Check_In_Lon']) if pd.notna(row['Check_In_Lat']) else "---", axis=1)
                 all_df['Hours Worked'] = all_df.apply(lambda row: calculate_hours_worked(row, is_history=False), axis=1)
                 all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
                 all_df['Time Out'] = all_df['Check_Out_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else "---")
                 
-                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Hours Worked', 'Live Status', 'Location']]
+                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Hours Worked', 'Live Status', 'Location Name']]
                 
                 search_ceo_roster = st.text_input("🔍 Search Roster...", key="ceo_roster_search")
                 if search_ceo_roster:
                     display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_ceo_roster, case=False, na=False)).any(axis=1)]
                 
-                st.dataframe(
-                    display_df, 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={"Location": st.column_config.LinkColumn("GPS Map", display_text="📍 View Map")}
-                )
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
             else:
                 st.info("No employees found in system.")
 
