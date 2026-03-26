@@ -51,6 +51,7 @@ def ensure_db_updates():
         cursor.execute("ALTER TABLE branches ADD COLUMN IF NOT EXISTS geofence_radius NUMERIC DEFAULT 50.0;")
         cursor.execute("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS is_overtime INT DEFAULT 0;")
         cursor.execute("CREATE TABLE IF NOT EXISTS marketer_sales (sale_id SERIAL PRIMARY KEY, user_id INT, branch_id INT, amount NUMERIC, client_name TEXT, date DATE);")
+        cursor.execute("CREATE TABLE IF NOT EXISTS marketer_locations (loc_id SERIAL PRIMARY KEY, user_id INT, timestamp TIMESTAMP, latitude NUMERIC, longitude NUMERIC);")
         cursor.execute("UPDATE attendance SET checkout_status='Approved' WHERE checkout_status LIKE 'Pending%';")
         cursor.execute("UPDATE users SET role='Staff' WHERE role='Worker';")
         cursor.execute("UPDATE notifications SET target_role='Staff' WHERE target_role='Worker';")
@@ -257,12 +258,12 @@ def update_performance_status(user_id):
     conn.close()
     return status
 
-def log_attendance(user_id, lat, lon):
+def log_attendance(user_id, lat, lon, status='Approved'):
     conn = get_connection()
     cursor = conn.cursor()
     now = get_local_time().strftime("%Y-%m-%d %H:%M:%S")
     date_today = get_local_time().strftime("%Y-%m-%d")
-    cursor.execute("INSERT INTO attendance (user_id, date, check_in_time, check_in_lat, check_in_lon, checkin_status, is_overtime) VALUES (%s, %s, %s, %s, %s, %s, 0)", (user_id, date_today, now, lat, lon, 'Approved'))
+    cursor.execute("INSERT INTO attendance (user_id, date, check_in_time, check_in_lat, check_in_lon, checkin_status, is_overtime) VALUES (%s, %s, %s, %s, %s, %s, 0)", (user_id, date_today, now, lat, lon, status))
     conn.commit()
     conn.close()
     update_performance_status(user_id) 
@@ -382,6 +383,22 @@ def log_delivery(journey_id, lat, lon):
     conn.commit()
     conn.close()
 
+def log_marketer_location(user_id, lat, lon):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO marketer_locations (user_id, timestamp, latitude, longitude) VALUES (%s, %s, %s, %s)", (user_id, get_local_time().strftime("%Y-%m-%d %H:%M:%S"), lat, lon))
+    conn.commit()
+    conn.close()
+
+def get_marketer_locations(user_id):
+    date_today = get_local_time().strftime("%Y-%m-%d")
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT timestamp, latitude, longitude FROM marketer_locations WHERE user_id=%s AND timestamp::date = %s ORDER BY timestamp DESC", (user_id, date_today))
+    res = cursor.fetchall()
+    conn.close()
+    return res
+
 def submit_leave_request(user_id, start_date, end_date, reason):
     conn = get_connection()
     cursor = conn.cursor()
@@ -457,20 +474,67 @@ def get_monthly_attendance_ranking():
     current_month = get_local_time().strftime("%Y-%m")
     days_in_month_so_far = get_local_time().day
     query = f"""
-        SELECT u.full_name AS "Employee", u.role AS "Role", COALESCE(b.branch_name, 'Corporate') AS "Branch",
-               COUNT(DISTINCT a.date) AS "Days_Worked"
+        SELECT u.user_id, u.full_name AS "Employee", u.role AS "Role", COALESCE(b.branch_name, 'Corporate') AS "Branch",
+               a.date, a.check_in_time AS "Check_In_Time", a.check_out_time AS "Check_Out_Time", 
+               a.on_break AS "On_Break", a.break_start_time AS "Break_Start_Time", a.break_seconds AS "Break_Seconds", 
+               a.is_overtime AS "Is_Overtime", COALESCE(b.shift_hours, 8.0) AS "Shift_Hours"
         FROM users u
         LEFT JOIN branches b ON u.branch_id = b.branch_id
         LEFT JOIN attendance a ON u.user_id = a.user_id AND a.date LIKE '{current_month}-%%'
         WHERE u.role NOT IN ('CEO', 'System Admin')
-        GROUP BY u.user_id, u.full_name, u.role, b.branch_name
-        ORDER BY "Days_Worked" DESC
     """
-    att_rank_df = get_df(query)
-    if not att_rank_df.empty:
-        att_rank_df['Possible Days'] = days_in_month_so_far
-        att_rank_df['Attendance Rate'] = (att_rank_df['Days_Worked'] / days_in_month_so_far * 100).apply(lambda x: f"{x:.1f}%")
-    return att_rank_df
+    df = get_df(query)
+    if df.empty: return pd.DataFrame()
+    
+    def get_hours_ot(row):
+        if pd.isna(row['Check_In_Time']) or pd.isna(row['date']): return 0.0, 0.0
+        try:
+            check_in_dt = pd.to_datetime(row['Check_In_Time'])
+            if pd.notna(row['Check_Out_Time']):
+                end_dt = pd.to_datetime(row['Check_Out_Time'])
+            else:
+                if str(row['date']) == get_local_time().strftime("%Y-%m-%d"):
+                    end_dt = get_local_time()
+                else: return 0.0, 0.0 
+                    
+            break_secs = float(row.get('Break_Seconds', 0)) if pd.notna(row.get('Break_Seconds')) else 0.0
+            if row.get('On_Break') == 1 and pd.notna(row.get('Break_Start_Time')):
+                if str(row['date']) == get_local_time().strftime("%Y-%m-%d"):
+                    break_start_dt = pd.to_datetime(row['Break_Start_Time'])
+                    break_secs += (get_local_time() - break_start_dt).total_seconds()
+                    
+            worked_seconds = (end_dt - check_in_dt).total_seconds() - break_secs
+            worked_seconds = max(0.0, worked_seconds)
+            
+            shift_hours = float(row.get('Shift_Hours', 8.0))
+            shift_seconds = shift_hours * 3600
+            is_ot = int(row.get('Is_Overtime', 0))
+            
+            if is_ot == 1 and worked_seconds > shift_seconds:
+                std_secs = shift_seconds
+                ot_secs = worked_seconds - shift_seconds
+            else:
+                std_secs = min(worked_seconds, shift_seconds)
+                ot_secs = 0.0
+                
+            return std_secs / 3600.0, ot_secs / 3600.0
+        except: return 0.0, 0.0
+
+    hours_df = pd.DataFrame(df.apply(get_hours_ot, axis=1).tolist(), columns=['Std_Hours', 'OT_Hours'], index=df.index)
+    df = pd.concat([df, hours_df], axis=1)
+    
+    grouped = df.groupby(['user_id', 'Employee', 'Role', 'Branch']).agg(
+        Days_Worked=('date', 'count'),
+        Total_Hours=('Std_Hours', 'sum'),
+        Total_OT=('OT_Hours', 'sum')
+    ).reset_index()
+    
+    grouped['Average Hours/Day'] = grouped.apply(lambda x: f"{(x['Total_Hours'] / x['Days_Worked']):.1f}h" if x['Days_Worked'] > 0 else "0.0h", axis=1)
+    grouped['Total_Hours'] = grouped['Total_Hours'].apply(lambda x: f"{x:.1f}h")
+    grouped['Total_OT'] = grouped['Total_OT'].apply(lambda x: f"{x:.1f}h")
+    grouped['Attendance Rate'] = (grouped['Days_Worked'] / days_in_month_so_far * 100).apply(lambda x: f"{x:.1f}%")
+    
+    return grouped[['Employee', 'Role', 'Branch', 'Days_Worked', 'Total_Hours', 'Total_OT', 'Average Hours/Day', 'Attendance Rate']].sort_values('Days_Worked', ascending=False)
 
 def add_branch(name, lat, lon, shift_hours=8.0, radius=50.0):
     conn = get_connection()
@@ -1172,16 +1236,19 @@ else:
                             st.error("⚠️ GPS Error: Location missing. Please tap the blue button above.")
                         else:
                             if st.session_state['role'] in ['Marketer', 'Driver', 'Motorbike']:
-                                log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
+                                if st.session_state['role'] == 'Marketer':
+                                    log_attendance(st.session_state['user_id'], worker_lat, worker_lon, 'Pending OM')
+                                    log_notification(None, 'Operations Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) has checked in and requires location approval.")
+                                else:
+                                    log_attendance(st.session_state['user_id'], worker_lat, worker_lon)
+                                    
                                 if st.session_state['role'] == 'Driver':
                                     log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
                                     log_notification(None, 'Operations Manager', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
                                     log_notification(None, 'CEO', None, None, f"🌍 {st.session_state['name']} (Driver) checked in from the field.")
                                 elif st.session_state['role'] == 'Motorbike':
                                     log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🌍 {st.session_state['name']} (Motorbike) checked in from the field.")
-                                else:
-                                    log_notification(None, 'General Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) checked in from the field.")
-                                    log_notification(None, 'Operations Manager', None, None, f"🌍 {st.session_state['name']} (Marketer) checked in from the field.")
+                                
                                 st.cache_data.clear()
                                 try: st.query_params.clear()
                                 except: pass
@@ -1231,7 +1298,6 @@ else:
                     st.cache_data.clear()
                     st.rerun()
                 
-                # Render inbox while on break, then stop further execution
                 st.write("---")
                 render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
                 st.stop() 
@@ -1270,6 +1336,44 @@ else:
         if is_working or st.session_state['role'] in ['Branch Manager', 'HR', 'General Manager', 'Operations Manager', 'Accountant']:
             
             if st.session_state['role'] == "Marketer" and is_working:
+                if checkin_status == 'Pending OM':
+                    st.warning("⏳ Your initial check-in location is currently **Pending Approval** from the Operations Manager. You can continue logging your work.")
+                    
+                st.write("---")
+                st.write("### 📍 Log Current Field Location")
+                st.caption("Keep your manager updated on your current location throughout the day.")
+                
+                m_lat, m_lon = get_url_coords()
+                
+                if m_lat and m_lon:
+                    st.success("✅ Current Location Locked!")
+                else:
+                    st.markdown(get_gps_iframe(f"loc_{st.session_state['user_id']}"), unsafe_allow_html=True)
+                    
+                if st.button("📍 Submit Location Updates", use_container_width=True):
+                    if m_lat and m_lon:
+                        log_marketer_location(st.session_state['user_id'], m_lat, m_lon)
+                        loc_name = get_location_name(m_lat, m_lon)
+                        log_notification(None, 'Operations Manager', None, None, f"📍 {st.session_state['name']} (Marketer) is currently at: {loc_name}")
+                        st.cache_data.clear()
+                        st.success("Location updated successfully!")
+                        try: st.query_params.clear()
+                        except: pass
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("Please tap the blue button to get your GPS location first.")
+                        
+                st.write("### 📜 Today's Location Log")
+                m_locs = get_marketer_locations(st.session_state['user_id'])
+                if m_locs:
+                    for l in m_locs:
+                        loc_name = get_location_name(l[1], l[2])
+                        st.info(f"✅ **Logged at {l[0]}**\n\n📍 {loc_name}")
+                else:
+                    st.caption("No locations logged yet today.")
+                    
+                st.write("---")
                 st.write("### 💰 Log Daily Field Sales")
                 st.caption("Submit your closed sales for today.")
                 with st.form("marketer_sales_form"):
@@ -1539,11 +1643,13 @@ else:
                     if not all_df.empty:
                         def get_live_status(row):
                             if pd.isna(row['Check_In_Time']): return "⚪ Not Logged In"
+                            if row['Checkin_Status'] == 'Pending OM': return "⏳ Check-In Pending Approval"
                             if row['Checkin_Status'] in ['Pending GM', 'Pending Manager']: return "⏳ Check-In Pending"
                             if not pd.isna(row['Checkout_Status']):
                                 if row['Checkout_Status'] == 'Approved': return "🛑 Checked Out"
                                 if row['Checkout_Status'] in ['Pending Manager', 'Pending GM']: return "⏳ Pending Checkout"
                             if row['On_Break'] == 1: return "🍱 On Lunch"
+                            if row['Is_Overtime'] == 1: return "🔥 Working (Overtime)"
                             return "🟢 Working Active"
                         
                         all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
@@ -1677,11 +1783,13 @@ else:
                     if not all_df.empty:
                         def get_live_status(row):
                             if pd.isna(row['Check_In_Time']): return "⚪ Not Logged In"
+                            if row['Checkin_Status'] == 'Pending OM': return "⏳ Check-In Pending Approval"
                             if row['Checkin_Status'] in ['Pending GM', 'Pending Manager']: return "⏳ Check-In Pending"
                             if not pd.isna(row['Checkout_Status']):
                                 if row['Checkout_Status'] == 'Approved': return "🛑 Checked Out"
                                 if row['Checkout_Status'] in ['Pending Manager', 'Pending GM']: return "⏳ Pending Checkout"
                             if row['On_Break'] == 1: return "🍱 On Lunch"
+                            if row['Is_Overtime'] == 1: return "🔥 Working (Overtime)"
                             return "🟢 Working Active"
                         
                         all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
@@ -1702,7 +1810,7 @@ else:
                         
                 with tab3:
                     st.write("### 🏆 Monthly Attendance Ranking")
-                    st.caption("Ranks employees by the number of days they have actively worked this month.")
+                    st.caption("Detailed tracking including standard hours and approved overtime.")
                     att_rank_df = get_monthly_attendance_ranking()
                     if not att_rank_df.empty:
                         st.dataframe(att_rank_df, use_container_width=True, hide_index=True)
@@ -1788,15 +1896,37 @@ else:
                 gm_tab1, gm_tab2, gm_tab3, gm_tab4, gm_tab5, gm_tab6 = st.tabs(["🌍 Field Activity", "💰 Daily", "🏆 Leaderboards", "📅 Calendar", "📜 Finance", "📞 Directory"])
                 
                 with gm_tab1:
-                    st.write("### 🚚 Live Field Activity (Drivers & Motorbikes)")
-                    st.caption("Live timeline of field operations.")
+                    if st.session_state['role'] == 'Operations Manager':
+                        pending_checkins = get_df(f"SELECT a.record_id, u.full_name, a.check_in_time, a.check_in_lat, a.check_in_lon FROM attendance a JOIN users u ON a.user_id = u.user_id WHERE a.checkin_status='Pending OM' AND a.date='{date_today}'")
+                        if not pending_checkins.empty:
+                            st.warning("⚠️ **Pending Marketer Check-ins Require Approval**")
+                            for _, row in pending_checkins.iterrows():
+                                loc_name = get_location_name(row['check_in_lat'], row['check_in_lon'])
+                                cols = st.columns([3, 1])
+                                cols[0].write(f"**{row['full_name']}** checked in at {row['check_in_time']}\n📍 **Location:** {loc_name}")
+                                if cols[1].button("Approve Location", key=f"app_ci_{row['record_id']}", type="primary"):
+                                    conn = get_connection()
+                                    conn.cursor().execute("UPDATE attendance SET checkin_status='Approved' WHERE record_id=%s", (row['record_id'],))
+                                    conn.commit()
+                                    conn.close()
+                                    st.cache_data.clear()
+                                    st.rerun()
+                            st.write("---")
+
+                    st.write("### 🚚 Live Field Activity (Radar)")
+                    st.caption("Live timeline of field operations for Drivers, Motorbikes, and Marketers.")
                     delivery_query = f"""
                         SELECT u.full_name AS "Field Agent", u.role AS "Role", d.delivery_time AS "Timestamp", d.latitude, d.longitude
                         FROM deliveries d
                         JOIN driver_journeys dj ON d.journey_id = dj.journey_id
                         JOIN users u ON dj.driver_id = u.user_id
                         WHERE dj.date = '{date_today}'
-                        ORDER BY d.delivery_time DESC
+                        UNION ALL
+                        SELECT u.full_name AS "Field Agent", u.role AS "Role", ml.timestamp AS "Timestamp", ml.latitude, ml.longitude
+                        FROM marketer_locations ml
+                        JOIN users u ON ml.user_id = u.user_id
+                        WHERE ml.timestamp::date = '{date_today}'
+                        ORDER BY "Timestamp" DESC
                     """
                     del_df = get_df(delivery_query)
                     if not del_df.empty:
@@ -1805,7 +1935,7 @@ else:
                         display_del_df = del_df[['Field Agent', 'Role', 'Timestamp', 'Location Name']]
                         st.dataframe(display_del_df, use_container_width=True, hide_index=True)
                     else:
-                        st.caption("No deliveries logged in the field today.")
+                        st.caption("No deliveries or field locations logged today.")
 
                 with gm_tab2:
                     st.write("### Today's Branch Sales Rankings")
@@ -2040,11 +2170,13 @@ else:
             if not all_df.empty:
                 def get_live_status(row):
                     if pd.isna(row['Check_In_Time']): return "⚪ Not Logged In"
+                    if row['Checkin_Status'] == 'Pending OM': return "⏳ Check-In Pending Approval"
                     if row['Checkin_Status'] in ['Pending GM', 'Pending Manager']: return "⏳ Check-In Pending"
                     if not pd.isna(row['Checkout_Status']):
                         if row['Checkout_Status'] == 'Approved': return "🛑 Checked Out"
                         if row['Checkout_Status'] in ['Pending Manager', 'Pending GM']: return "⏳ Pending Checkout"
                     if row['On_Break'] == 1: return "🍱 On Lunch"
+                    if row['Is_Overtime'] == 1: return "🔥 Working (Overtime)"
                     return "🟢 Working Active"
                 
                 def get_loc_link(row):
@@ -2075,7 +2207,7 @@ else:
 
         with tab3:
             st.write("### 🏆 Monthly Attendance Ranking")
-            st.caption("Ranks employees by the number of days they have actively worked this month.")
+            st.caption("Detailed tracking including standard hours and approved overtime.")
             att_rank_df = get_monthly_attendance_ranking()
             if not att_rank_df.empty:
                 st.dataframe(att_rank_df, use_container_width=True, hide_index=True)
