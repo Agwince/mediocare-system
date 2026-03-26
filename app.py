@@ -1100,9 +1100,9 @@ else:
                 st.success("No pending access requests.")
 
     # =========================================================
-    # UNIVERSAL TIME TRACKER & WORKFLOW (EVERYONE EXCEPT CEO)
+    # UNIVERSAL TIME TRACKER & WORKFLOW (EVERYONE EXCEPT CEO & SYS ADMIN)
     # =========================================================
-    elif st.session_state['role'] != 'CEO':
+    elif st.session_state['role'] not in ['CEO', 'System Admin']:
         att_record = get_attendance_record(st.session_state['user_id'])
         
         if att_record:
@@ -1182,9 +1182,6 @@ else:
                     st.cache_data.clear()
                     st.rerun()
             
-            if st.session_state['role'] in ['Staff', 'Driver', 'Marketer', 'Motorbike']:
-                st.write("---")
-                render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
             st.stop() 
 
         is_working = True
@@ -1217,6 +1214,7 @@ else:
                     st.cache_data.clear()
                     st.rerun()
                 
+                # Render inbox while on break, then stop further execution
                 st.write("---")
                 render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
                 st.stop() 
@@ -1248,8 +1246,9 @@ else:
                     else:
                         st.caption("✅ 1h Lunch break fully used.")
 
+
         # =========================================================
-        # ROLE-SPECIFIC TASKS 
+        # ROLE-SPECIFIC TASKS & DASHBOARDS
         # =========================================================
         if is_working or st.session_state['role'] in ['Branch Manager', 'HR', 'General Manager', 'Operations Manager']:
             
@@ -1732,6 +1731,7 @@ else:
                             dir_df = dir_df[dir_df.astype(str).apply(lambda x: x.str.contains(search_gm_dir, case=False, na=False)).any(axis=1)]
                         st.dataframe(dir_df, column_config={"Call": st.column_config.LinkColumn("Action", display_text="📞 Call Now")}, hide_index=True, use_container_width=True)
 
+            # --- UNIVERSAL END SHIFT BLOCK ---
             if is_working:
                 st.write("---")
                 col_c1, col_c2, col_c3 = st.columns([1, 2, 1])
@@ -1778,13 +1778,15 @@ else:
                                 request_check_out(st.session_state['user_id'], st.session_state['role'])
                                     
                                 if st.session_state['role'] == 'Driver':
-                                    log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out for the day.")
-                                    log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out for the day.")
-                                    log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out for the day.")
+                                    log_notification(None, 'General Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out.")
+                                    log_notification(None, 'Operations Manager', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out.")
+                                    log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} (Driver) has checked out.")
                                 elif st.session_state['role'] == 'Motorbike':
-                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has checked out for the day.")
-                                elif st.session_state['role'] == 'Staff':
-                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} has checked out for the day.")
+                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} (Motorbike) has checked out.")
+                                elif st.session_state['role'] in ['Staff', 'Marketer']:
+                                    log_notification(None, 'Branch Manager', st.session_state['branch_id'], None, f"🛑 {st.session_state['name']} ({st.session_state['role']}) has checked out.")
+                                else:
+                                    log_notification(None, 'CEO', None, None, f"🛑 {st.session_state['name']} ({st.session_state['role']}) has checked out.")
                                         
                                 st.session_state['confirm_checkout'] = False
                                 st.cache_data.clear()
@@ -1907,18 +1909,13 @@ else:
                     if row['On_Break'] == 1: return "🍱 On Lunch"
                     return "🟢 Working Active"
                 
-                def get_loc_link(row):
-                    if pd.notna(row['Check_In_Lat']) and pd.notna(row['Check_In_Lon']):
-                        return f"https://www.google.com/maps?q={row['Check_In_Lat']},{row['Check_In_Lon']}"
-                    return None
-
                 all_df['Live Status'] = all_df.apply(get_live_status, axis=1)
-                all_df['Location'] = all_df.apply(get_loc_link, axis=1)
                 all_df['Hours Worked'] = all_df.apply(lambda row: calculate_hours_worked(row, is_history=False), axis=1)
+                all_df['Location Name'] = all_df.apply(lambda row: get_location_name(row['Check_In_Lat'], row['Check_In_Lon']) if pd.notna(row['Check_In_Lat']) else "---", axis=1)
                 all_df['Time In'] = all_df['Check_In_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else ("---" if pd.isna(x) else x))
                 all_df['Time Out'] = all_df['Check_Out_Time'].apply(lambda x: str(x).split(" ")[1] if pd.notna(x) and " " in str(x) else "---")
                 
-                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Hours Worked', 'Live Status', 'Location']]
+                display_df = all_df[['Name', 'Role', 'Branch', 'Time In', 'Time Out', 'Hours Worked', 'Live Status', 'Location Name']]
                 
                 search_ceo_roster = st.text_input("🔍 Search Roster...", key="ceo_roster_search")
                 if search_ceo_roster:
@@ -1927,8 +1924,7 @@ else:
                 st.dataframe(
                     display_df, 
                     use_container_width=True, 
-                    hide_index=True,
-                    column_config={"Location": st.column_config.LinkColumn("GPS Map", display_text="📍 View Map")}
+                    hide_index=True
                 )
             else:
                 st.info("No employees found in system.")
