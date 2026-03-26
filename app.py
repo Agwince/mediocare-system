@@ -1199,6 +1199,14 @@ else:
                                     st.rerun()
                                 else:
                                     st.error(f"❌ Security Block: You are {int(distance_to_branch)} meters away from the branch. You must be within {int(branch_radius)} meters to check in.")
+                            
+            else:
+                st.info("You operate across all branches. Click below to start your shift.")
+                if st.button("✅ PRESS TO CHECK IN", use_container_width=True, type="primary"):
+                    log_attendance(st.session_state['user_id'], 0.0, 0.0)
+                    st.cache_data.clear()
+                    st.rerun()
+            
             st.stop() 
 
         is_working = True
@@ -1638,7 +1646,7 @@ else:
                 st.write("### HR Operations Portal")
                 date_today = get_local_time().strftime("%Y-%m-%d")
                 
-                tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Leaves", "🚨 Live Status", "🏆 Attendance", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
+                tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📝 Leaves", "🚨 Live Status", "🏆 Attendance", "📊 Financials", "📞 Directory", f"🔔 Inbox ({my_notif_count})"])
                 
                 with tab1:
                     hr_leaves = get_df("SELECT lr.request_id AS \"Request_ID\", u.full_name as \"Employee\", lr.start_date AS \"Start_Date\", lr.end_date AS \"End_Date\", lr.reason AS \"Reason\", lr.status AS \"Status\" FROM leave_requests lr JOIN users u ON lr.user_id = u.user_id WHERE lr.status='Pending HR'")
@@ -1710,6 +1718,66 @@ else:
                         st.info("No attendance data recorded yet this month.")
                 
                 with tab4:
+                    st.write("### 📊 Branch Financial Performance")
+                    col_f1, col_f2 = st.columns(2)
+                    with col_f1:
+                        st.write("### 📊 Weekly Sales vs Expenses")
+                        perf_query = '''
+                            SELECT b.branch_name AS "Branch_Name",
+                                (SELECT COALESCE(SUM(total_sales), 0) FROM daily_sales WHERE branch_id = b.branch_id AND CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '7 days') AS "Sales (KES)",
+                                (SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE branch_id = b.branch_id AND CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '7 days') AS "Expenses (KES)"
+                            FROM branches b
+                        '''
+                        perf_df = get_df(perf_query)
+                        if not perf_df.empty and (perf_df['Sales (KES)'].sum() > 0 or perf_df['Expenses (KES)'].sum() > 0):
+                            chart_data = perf_df.set_index('Branch_Name')
+                            st.bar_chart(chart_data, color=["#1484A6", "#EF4444"])
+                        else:
+                            st.info("No data in last 7 days.")
+                            
+                        st.write("---")
+                        st.write("### 📊 Monthly Sales vs Expenses")
+                        monthly_query = '''
+                            SELECT b.branch_name AS "Branch_Name",
+                                (SELECT COALESCE(SUM(total_sales), 0) FROM daily_sales WHERE branch_id = b.branch_id AND CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '30 days') AS "Sales (KES)",
+                                (SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE branch_id = b.branch_id AND CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '30 days') AS "Expenses (KES)"
+                            FROM branches b
+                        '''
+                        monthly_df = get_df(monthly_query)
+                        if not monthly_df.empty and (monthly_df['Sales (KES)'].sum() > 0 or monthly_df['Expenses (KES)'].sum() > 0):
+                            m_chart_data = monthly_df.set_index('Branch_Name')
+                            st.bar_chart(m_chart_data, color=["#1484A6", "#EF4444"])
+                        else:
+                            st.info("No data in last 30 days.")
+                            
+                    with col_f2:
+                        st.write("### 🏆 Today's Daily Sales")
+                        rank_query = f"SELECT b.branch_name AS \"Branch\", SUM(ds.total_sales) AS \"Total Sales (KES)\" FROM daily_sales ds JOIN branches b ON ds.branch_id = b.branch_id WHERE ds.date = '{date_today}' GROUP BY b.branch_name ORDER BY \"Total Sales (KES)\" DESC"
+                        rank_df = get_df(rank_query)
+                        if not rank_df.empty:
+                            rank_df.index = rank_df.index + 1 
+                            st.dataframe(rank_df, use_container_width=True)
+                        else:
+                            st.warning("No sales reports today.")
+                            
+                        st.write("---")
+                        st.write("### 🏆 Monthly Branch Rankings")
+                        m_rank_df = get_monthly_sales_rankings_df()
+                        if not m_rank_df.empty:
+                            st.dataframe(m_rank_df[['Rank', 'Branch_Name', 'Monthly Sales (KES)']], use_container_width=True, hide_index=True)
+                        else:
+                            st.warning("No sales data available for the month.")
+                            
+                    st.write("---")
+                    st.write("### 💼 Marketer Field Sales (Today)")
+                    ms_query = f"SELECT u.full_name AS \"Marketer\", ms.client_name AS \"Client/Business\", ms.amount AS \"Amount (KES)\" FROM marketer_sales ms JOIN users u ON ms.user_id = u.user_id WHERE ms.date = '{date_today}' ORDER BY ms.sale_id DESC"
+                    ms_df = get_df(ms_query)
+                    if not ms_df.empty:
+                        st.dataframe(ms_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No field sales logged today.")
+                
+                with tab5:
                     st.write("### 📞 Global Contact Directory")
                     dir_df = get_directory_df()
                     if not dir_df.empty:
@@ -1718,7 +1786,7 @@ else:
                             dir_df = dir_df[dir_df.astype(str).apply(lambda x: x.str.contains(search_hr_dir, case=False, na=False)).any(axis=1)]
                         st.dataframe(dir_df, column_config={"Call": st.column_config.LinkColumn("Action", display_text="📞 Call Now")}, hide_index=True, use_container_width=True)
 
-                with tab5:
+                with tab6:
                     render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
 
             elif st.session_state['role'] in ["General Manager", "Operations Manager"]:
@@ -1878,6 +1946,10 @@ else:
                             if st.button("❌ NO, CANCEL", use_container_width=True):
                                 st.session_state['confirm_checkout'] = False
                                 st.rerun()
+
+        st.write("---")
+        render_inbox(st.session_state['role'], st.session_state['branch_id'], st.session_state['user_id'])
+
 
     # =========================================================
     # CEO DASHBOARD 
