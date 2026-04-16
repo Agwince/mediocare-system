@@ -39,20 +39,40 @@ if not SUPABASE_URL or not DB_URL:
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =========================================================
-# CONNECTION POOLING (replaces per-call get_connection)
+# CONNECTION POOLING — with timeout & reconnect handling
 # =========================================================
 @st.cache_resource
 def get_pool():
-    return psycopg2.pool.ThreadedConnectionPool(minconn=2, maxconn=10, dsn=DB_URL)
+    return psycopg2.pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=10,
+        dsn=DB_URL,
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5
+    )
 
 def get_connection():
-    return get_pool().getconn()
+    try:
+        conn = get_pool().getconn()
+        # Test if the connection is still alive
+        conn.cursor().execute("SELECT 1")
+        return conn
+    except Exception:
+        # Pool is stale (app woke from sleep) — rebuild it
+        st.cache_resource.clear()
+        return get_pool().getconn()
 
 def release_connection(conn):
     try:
         get_pool().putconn(conn)
     except Exception:
-        pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # =========================================================
 # KENYA TIMEZONE (EAT = UTC+3)
