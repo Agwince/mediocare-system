@@ -2212,14 +2212,14 @@ else:
                     st.write("### 🚚 Live Field Activity (Radar)")
                     del_df = get_df("""
                         SELECT u.full_name AS "Field Agent", u.role AS "Role",
-                               d.delivery_time AS "Timestamp", d.latitude, d.longitude
+                               CAST(d.delivery_time AS TEXT) AS "Timestamp", d.latitude, d.longitude
                         FROM deliveries d
                         JOIN driver_journeys dj ON d.journey_id = dj.journey_id
                         JOIN users u ON dj.driver_id = u.user_id
                         WHERE dj.date = %s
                         UNION ALL
                         SELECT u.full_name AS "Field Agent", u.role AS "Role",
-                               ml.timestamp AS "Timestamp", ml.latitude, ml.longitude
+                               CAST(ml.timestamp AS TEXT) AS "Timestamp", ml.latitude, ml.longitude
                         FROM marketer_locations ml
                         JOIN users u ON ml.user_id = u.user_id
                         WHERE ml.timestamp::date = %s
